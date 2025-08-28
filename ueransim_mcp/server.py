@@ -143,8 +143,8 @@ def validate_existing_container(container_id_or_name: str) -> bool:
                 raise ValueError(f"Invalid container name format: {container_id_or_name}")
         
         # Check if container exists using docker/nerdctl inspect
-        runtime = get_container_runtime()
-        inspect_cmd = [runtime, "inspect", container_id_or_name]
+        container_runtime = get_container_runtime()
+        inspect_cmd = [container_runtime, "inspect", container_id_or_name]
         
         result = subprocess.run(inspect_cmd, capture_output=True, text=True)
         
@@ -682,11 +682,11 @@ def attach_gnb_to_core(container_id_or_name: str, ngap_ip: str, gtp_ip: str) -> 
             validate_container_name(container_id_or_name, "gnb")
         
         # Get container runtime
-        runtime = get_container_runtime()
+        container_runtime = get_container_runtime()
         
         # Command to change NGAP IP
         ngap_cmd = [
-            runtime, "exec", container_id_or_name, 
+            container_runtime, "exec", container_id_or_name, 
             "sed", "-i", f"s/ngapIp: .*/ngapIp: {ngap_ip}/", 
             "/etc/ueransim/open5gs-gnb.yaml"
         ]
@@ -701,7 +701,7 @@ def attach_gnb_to_core(container_id_or_name: str, ngap_ip: str, gtp_ip: str) -> 
         
         # Command to change GTP IP
         gtp_cmd = [
-            runtime, "exec", container_id_or_name, 
+            container_runtime, "exec", container_id_or_name, 
             "sed", "-i", f"s/gtpIp: .*/gtpIp: {gtp_ip}/", 
             "/etc/ueransim/open5gs-gnb.yaml"
         ]
@@ -715,7 +715,7 @@ def attach_gnb_to_core(container_id_or_name: str, ngap_ip: str, gtp_ip: str) -> 
             )
         
         # Restart process to apply changes
-        restart_cmd = [runtime, "restart", container_id_or_name]
+        restart_cmd = [container_runtime, "restart", container_id_or_name]
         result_restart = subprocess.run(restart_cmd, capture_output=True, text=True)
         
         if result_restart.returncode != 0:
@@ -757,11 +757,11 @@ def inspect_container_ip(container_id_or_name: str) -> GnbOperationResponse:
         validate_existing_container(container_id_or_name)
         
         # Get container runtime
-        runtime = get_container_runtime()
+        container_runtime = get_container_runtime()
         
         # Use docker inspect to get container IP
         inspect_cmd = [
-            runtime, "inspect", "-f", 
+            container_runtime, "inspect", "-f", 
             "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", 
             container_id_or_name
         ]
@@ -836,27 +836,27 @@ def create_ue(gnb_search_list: str = "127.0.0.1", container_name: Optional[str] 
         validate_ip(gnb_search_list)
         
         # Get container runtime (docker or nerdctl)
-        runtime = get_container_runtime()
+        container_runtime = get_container_runtime()
         
         # Create container command
-        cmd = [runtime, "run", "-d"]
+        terminal_command = [container_runtime, "run", "-d"]
         
         # Add name if specified, otherwise generate one
         if container_name:
             validate_container_name(container_name, "ue")
-            cmd.extend(["--name", container_name])
+            terminal_command.extend(["--name", container_name])
         else:
             container_name = f"ue-{generate_random_suffix()}"
-            cmd.extend(["--name", container_name])
+            terminal_command.extend(["--name", container_name])
             
         # Add environment variables
-        cmd.extend([
+        terminal_command.extend([
             "-e", f"GNB_SEARCH_LIST={gnb_search_list}",
             "ueransim-ue:latest"  # Docker image name
         ])
         
         # Execute command
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(terminal_command, capture_output=True, text=True)
         
         if result.returncode != 0:
             return UeCreateResponse(
@@ -952,10 +952,10 @@ def delete_ue(container_id_or_name: str) -> UeOperationResponse:
             validate_container_name(container_id_or_name, "ue")
         
         # Get container runtime
-        runtime = get_container_runtime()
+        container_runtime = get_container_runtime()
             
         # Stop and remove container
-        stop_cmd = [runtime, "stop", container_id_or_name]
+        stop_cmd = [container_runtime, "stop", container_id_or_name]
         result = subprocess.run(stop_cmd, capture_output=True, text=True)
         
         if result.returncode != 0:
@@ -965,7 +965,7 @@ def delete_ue(container_id_or_name: str) -> UeOperationResponse:
                 container=container_id_or_name
             )
         
-        rm_cmd = [runtime, "rm", container_id_or_name]
+        rm_cmd = [container_runtime, "rm", container_id_or_name]
         result = subprocess.run(rm_cmd, capture_output=True, text=True)
         
         if result.returncode != 0:
@@ -1007,11 +1007,11 @@ def get_ue_logs(container_id_or_name: str, lines: int = 100) -> UeOperationRespo
             validate_container_name(container_id_or_name, "ue")
         
         # Get container runtime
-        runtime = get_container_runtime()
+        container_runtime = get_container_runtime()
         
         # Execute command to retrieve logs
-        cmd = [runtime, "logs", f"--tail={lines}", container_id_or_name]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        terminal_command = [container_runtime, "logs", f"--tail={lines}", container_id_or_name]
+        result = subprocess.run(terminal_command, capture_output=True, text=True)
         
         if result.returncode != 0:
             return UeOperationResponse(
@@ -1059,10 +1059,10 @@ def attach_ue_to_gnb(ue_container_id_or_name: str, gnb_container_id_or_name: str
             validate_container_name(gnb_container_id_or_name, "gnb")
         
         # Get container runtime
-        runtime = get_container_runtime()
+        container_runtime = get_container_runtime()
         
         # Get gNB container IP
-        ip_cmd = [runtime, "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", gnb_container_id_or_name]
+        ip_cmd = [container_runtime, "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", gnb_container_id_or_name]
         ip_result = subprocess.run(ip_cmd, capture_output=True, text=True)
         
         if ip_result.returncode != 0:
@@ -1076,7 +1076,7 @@ def attach_ue_to_gnb(ue_container_id_or_name: str, gnb_container_id_or_name: str
         
         # Update gnbSearchList in UE
         search_cmd = [
-            runtime, "exec", ue_container_id_or_name, 
+            container_runtime, "exec", ue_container_id_or_name, 
             "sed", "-i", f"s/gnbSearchList: .*/gnbSearchList: {gnb_ip}/", 
             "/etc/ueransim/open5gs-ue.yaml"
         ]
@@ -1091,13 +1091,13 @@ def attach_ue_to_gnb(ue_container_id_or_name: str, gnb_container_id_or_name: str
         
         # Add success message to logs
         log_cmd = [
-            runtime, "exec", ue_container_id_or_name, 
+            container_runtime, "exec", ue_container_id_or_name, 
             "sh", "-c", "echo 'Successfully attached to gNB container' >> /var/log/ueransim.log"
         ]
         subprocess.run(log_cmd)
         
         # Restart UE container
-        restart_cmd = [runtime, "restart", ue_container_id_or_name]
+        restart_cmd = [container_runtime, "restart", ue_container_id_or_name]
         result_restart = subprocess.run(restart_cmd, capture_output=True, text=True)
         
         if result_restart.returncode != 0:
@@ -1143,7 +1143,7 @@ def edit_exist_container(container_id_or_name: str,
             validate_ip(config_value)
         
         # Get container runtime
-        runtime = get_container_runtime()
+        container_runtime = get_container_runtime()
         
         # Container already validated by validate_existing_container, no need to check again
         
@@ -1151,21 +1151,21 @@ def edit_exist_container(container_id_or_name: str,
         if config_type == "gnb_search_list":
             # Update UE configuration
             config_cmd = [
-                runtime, "exec", container_id_or_name,
+                container_runtime, "exec", container_id_or_name,
                 "sed", "-i", f"s/gnbSearchList: .*/gnbSearchList: {config_value}/",
                 "/etc/ueransim/open5gs-ue.yaml"
             ]
         elif config_type == "ngap_ip":
             # Update gNB NGAP IP
             config_cmd = [
-                runtime, "exec", container_id_or_name,
+                container_runtime, "exec", container_id_or_name,
                 "sed", "-i", f"s/ngapIp: .*/ngapIp: {config_value}/",
                 "/etc/ueransim/open5gs-gnb.yaml"
             ]
         elif config_type == "gtp_ip":
             # Update gNB GTP IP
             config_cmd = [
-                runtime, "exec", container_id_or_name,
+                container_runtime, "exec", container_id_or_name,
                 "sed", "-i", f"s/gtpIp: .*/gtpIp: {config_value}/",
                 "/etc/ueransim/open5gs-gnb.yaml"
             ]
@@ -1188,14 +1188,14 @@ def edit_exist_container(container_id_or_name: str,
         
         # Add success message to logs
         log_cmd = [
-            runtime, "exec", container_id_or_name,
+            container_runtime, "exec", container_id_or_name,
             "sh", "-c", f"echo 'Configuration updated: {config_type}={config_value}' >> /var/log/ueransim.log"
         ]
         subprocess.run(log_cmd)
         
         # Echo success to demonstrate completion
         success_cmd = [
-            runtime, "exec", container_id_or_name,
+            container_runtime, "exec", container_id_or_name,
             "sh", "-c", "echo 'success'"
         ]
         success_result = subprocess.run(success_cmd, capture_output=True, text=True)
