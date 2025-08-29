@@ -1128,7 +1128,7 @@ def edit_exist_container(container_id_or_name: str,
     
     Args:
         container_id_or_name: Container ID or name to edit
-        config_type: Type of configuration to change (gnb_search_list, ngap_ip, gtp_ip)
+        config_type: Type of configuration to change (gnb_search_list, ngap_ip, gtp_ip, amf_ip)
         config_value: New configuration value
         
     Returns:
@@ -1139,7 +1139,7 @@ def edit_exist_container(container_id_or_name: str,
         validate_existing_container(container_id_or_name)
         
         # Validate config value based on type
-        if config_type in ["gnb_search_list", "ngap_ip", "gtp_ip"]:
+        if config_type in ["gnb_search_list", "ngap_ip", "gtp_ip", "amf_ip"]:
             validate_ip(config_value)
         
         # Get container runtime
@@ -1167,6 +1167,13 @@ def edit_exist_container(container_id_or_name: str,
             config_cmd = [
                 container_runtime, "exec", container_id_or_name,
                 "sed", "-i", f"s/gtpIp: .*/gtpIp: {config_value}/",
+                "/etc/ueransim/open5gs-gnb.yaml"
+            ]
+        elif config_type == "amf_ip":
+            # Update gNB AMF IP address
+            config_cmd = [
+                container_runtime, "exec", container_id_or_name,
+                "sed", "-i", f"s/amfConfigs:.*address: .*/amfConfigs:\\n  - address: {config_value}/",
                 "/etc/ueransim/open5gs-gnb.yaml"
             ]
         else:
