@@ -84,6 +84,22 @@ def run_container_command(command: List[str], **kwargs) -> subprocess.CompletedP
     
     return subprocess.run(command, **kwargs)
 
+def detect_image_os(image_name: str) -> str:
+    """Detect the operating system of a Docker image."""
+    container_runtime = get_container_runtime()
+
+    # Run the container and check /etc/os-release
+    os_release_cmd = [container_runtime, "run", "--rm", image_name, "cat", "/etc/os-release"]
+    result = run_container_command(os_release_cmd, capture_output=True, text=True)
+
+    if result.returncode == 0:
+        output = result.stdout.lower()
+        if "alpine" in output:
+            return "alpine"
+        elif "ubuntu" in output:
+            return "ubuntu"
+    return "unknown"
+
 # ============================================================================
 # VALIDATION FUNCTIONS
 # ============================================================================
@@ -872,7 +888,13 @@ def create_ue(gnb_search_list: str = "127.0.0.1", container_name: Optional[str] 
         # Get container runtime (docker)
         container_runtime = get_container_runtime()
         
-        # Create container command (basic setup first)
+        # Check if the image is Alpine or Ubuntu based
+        os_type = detect_image_os("ueransim-ue:latest")
+        is_alpine = os_type == "alpine"
+
+        print(f"Detected image type: {'Alpine' if is_alpine else 'Ubuntu'}", file=sys.stderr)
+        
+        # Create container command
         terminal_command = [container_runtime, "run", "-d"]
         
         # Add name if specified, otherwise generate one
@@ -883,14 +905,27 @@ def create_ue(gnb_search_list: str = "127.0.0.1", container_name: Optional[str] 
             container_name = f"ue-{generate_random_suffix()}"
             terminal_command.extend(["--name", container_name])
         
-        # Add basic capabilities
-        terminal_command.extend([
-            "--cap-add=NET_ADMIN",
-            "--network", "host",
-            "ueransim-ue:latest"  # Docker image name
-        ])
+        # Add required capabilities and devices for UE container based on image type
+        if is_alpine:
+            # Alpine image: use --privileged instead of --device /dev/net/tun
+            terminal_command.extend([
+                "--privileged",
+                "--cap-add=NET_ADMIN",
+                "--network", "host",
+                "ueransim-ue:latest"
+            ])
+        else:
+            # Ubuntu image: use --device /dev/net/tun
+            terminal_command.extend([
+                "--cap-add=NET_ADMIN",
+                "--device", "/dev/net/tun",
+                "--network", "host",
+                "ueransim-ue:latest"
+            ])
         
-        # Execute command to create container
+        print(f"Container creation command: {' '.join(terminal_command)}", file=sys.stderr)
+        
+        # Execute command
         result = run_container_command(terminal_command, capture_output=True, text=True)
         
         if result.returncode != 0:
@@ -903,70 +938,6 @@ def create_ue(gnb_search_list: str = "127.0.0.1", container_name: Optional[str] 
             )
         
         container_id = result.stdout.strip()
-        
-        # Check if this is an Alpine-based container and set up accordingly
-        check_os_cmd = [container_runtime, "exec", container_id, "cat", "/etc/os-release"]
-        os_result = run_container_command(check_os_cmd, capture_output=True, text=True)
-        
-        is_alpine = False
-        if os_result.returncode == 0 and "alpine" in os_result.stdout.lower():
-            is_alpine = True
-            # Alpine Linux detected - set up iproute2 and rt_tables
-            print(f"Alpine Linux detected in container {container_id}, setting up iproute2...", file=sys.stderr)
-            
-            # Create iproute2 directory
-            mkdir_cmd = [container_runtime, "exec", container_id, "mkdir", "-p", "/etc/iproute2"]
-            mkdir_result = run_container_command(mkdir_cmd, capture_output=True, text=True)
-            
-            if mkdir_result.returncode == 0:
-                # Create rt_tables file
-                rt_tables_cmd = [
-                    container_runtime, "exec", container_id, "sh", "-c",
-                    'echo "# Reserved values" > /etc/iproute2/rt_tables && ' +
-                    'echo "255	local" >> /etc/iproute2/rt_tables && ' +
-                    'echo "254	main" >> /etc/iproute2/rt_tables && ' +
-                    'echo "253	default" >> /etc/iproute2/rt_tables && ' +
-                    'echo "0	unspec" >> /etc/iproute2/rt_tables'
-                ]
-                rt_result = run_container_command(rt_tables_cmd, capture_output=True, text=True)
-                
-                if rt_result.returncode != 0:
-                    print(f"Warning: Failed to create rt_tables file: {rt_result.stderr}", file=sys.stderr)
-            else:
-                print(f"Warning: Failed to create iproute2 directory: {mkdir_result.stderr}", file=sys.stderr)
-        else:
-            # Ubuntu or other Linux - need to recreate container with TUN device
-            print(f"Ubuntu/Linux detected in container {container_id}, recreating with TUN device...", file=sys.stderr)
-            
-            # Stop and remove the current container
-            stop_cmd = [container_runtime, "stop", container_id]
-            run_container_command(stop_cmd, capture_output=True, text=True)
-            
-            rm_cmd = [container_runtime, "rm", container_id]
-            run_container_command(rm_cmd, capture_output=True, text=True)
-            
-            # Recreate container with TUN device for Ubuntu
-            terminal_command = [container_runtime, "run", "-d"]
-            terminal_command.extend(["--name", container_name])
-            terminal_command.extend([
-                "--cap-add=NET_ADMIN",
-                "--device", "/dev/net/tun",
-                "--network", "host",
-                "ueransim-ue:latest"
-            ])
-            
-            result = run_container_command(terminal_command, capture_output=True, text=True)
-            
-            if result.returncode != 0:
-                return UeCreateResponse(
-                    status="error",
-                    container_id="",
-                    container_name="",
-                    configuration=UeConfiguration(gnb_search_list=gnb_search_list),
-                    message=f"Failed to recreate container with TUN device: {result.stderr}"
-                )
-            
-            container_id = result.stdout.strip()
         
         # Update the gnbSearchList in the container's configuration file
         # Note: gnbSearchList is in YAML array format, so we need to update the IP address in the array

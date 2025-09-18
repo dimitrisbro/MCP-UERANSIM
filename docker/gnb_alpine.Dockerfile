@@ -3,7 +3,7 @@ FROM alpine:3.16 AS builder
 
 # Install required dependencies
 RUN apk add --no-cache \
-    gcc g++ cmake ninja make \
+    gcc g++ cmake ninja make nano iproute2 \
     libc-dev linux-headers git \
     lksctp-tools-dev lksctp-tools \
     musl-dev
@@ -21,6 +21,8 @@ FROM alpine:3.16
 
 # Install required runtime libraries
 RUN apk add --no-cache \
+    nano \
+    iproute2 \
     lksctp-tools \
     libstdc++ \
     bash

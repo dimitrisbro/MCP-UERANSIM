@@ -119,6 +119,50 @@ MCP-UERANSIM/
 
    **Note**: You MUST build these Docker images before the MCP tools will work. The tools expect images named exactly `ueransim-gnb:latest` and `ueransim-ue:latest`.
 
+## Using Prebuilt Docker Images
+
+If you prefer to use prebuilt Docker images instead of building them locally, you can pull them from either Harbor or GitHub Packages. After pulling the images, make sure to tag them as `ueransim-gnb:latest` and `ueransim-ue:latest` to ensure compatibility with the MCP tools.
+
+### Harbor
+
+The images are available in the following repository:
+
+- `mcp-ueransim/ueransim-ue-alpine`
+- `mcp-ueransim/ueransim-gnb-alpine`
+- `mcp-ueransim/ueransim-ue-ubuntu`
+- `mcp-ueransim/ueransim-gnb-ubuntu`
+
+Example:
+```bash
+docker pull mcp-ueransim/ueransim-gnb-alpine
+# Tag the image
+docker tag mcp-ueransim/ueransim-gnb-alpine ueransim-gnb:latest
+
+docker pull mcp-ueransim/ueransim-ue-alpine
+# Tag the image
+docker tag mcp-ueransim/ueransim-ue-alpine ueransim-ue:latest
+```
+
+### GitHub Packages
+
+The images are available in the following repository:
+
+- `mcp-ueransim-new/ueransim-gnb`
+- `mcp-ueransim-new/ueransim-ue`
+- `mcp-ueransim/ueransim-gnb-alpine`
+- `mcp-ueransim/ueransim-ue-alpine`
+
+Example:
+```bash
+docker pull ghcr.io/mcp-ueransim-new/ueransim-gnb
+# Tag the image
+docker tag ghcr.io/mcp-ueransim-new/ueransim-gnb ueransim-gnb:latest
+
+docker pull ghcr.io/mcp-ueransim-new/ueransim-ue
+# Tag the image
+docker tag ghcr.io/mcp-ueransim-new/ueransim-ue ueransim-ue:latest
+```
+
 ## Quick Start
 
 **IMPORTANT**: You must build the Docker images BEFORE installing the MCP server, otherwise the tools won't work!
@@ -558,7 +602,6 @@ docker exec manual-ue /usr/local/bin/nr-ue --help  # Should show help
 docker stop manual-gnb manual-ue
 docker rm manual-gnb manual-ue
 ```
-
 ## Acknowledgments
 
 - [UERANSIM](https://github.com/aligungr/UERANSIM) - Open source 5G UE and RAN simulator
