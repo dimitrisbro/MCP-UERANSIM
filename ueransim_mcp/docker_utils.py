@@ -49,6 +49,18 @@ def detect_image_os(image_name: str) -> str:
     return "unknown"
 
 
+def get_container_name(container_id_or_name: str) -> str:
+    """Resolve a container ID or name to its plain name (strips leading slash)."""
+    runtime = get_container_runtime()
+    r = run_container_command(
+        [runtime, "inspect", "-f", "{{.Name}}", container_id_or_name],
+        capture_output=True, text=True,
+    )
+    if r.returncode == 0:
+        return r.stdout.strip().lstrip("/")
+    return container_id_or_name
+
+
 def validate_existing_container(container_id_or_name: str) -> bool:
     """Check that a container exists in Docker. Raises ValueError if not found."""
     try:
