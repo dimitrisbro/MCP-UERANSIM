@@ -9,7 +9,7 @@ metadata:
 spec:
   containers:
     - name: gnb
-      image: ghcr.io/apelgroup/mcp-ueransim-new/ueransim-gnb:latest
+      image: ghcr.io/dimitrisbro/mcp-ueransim/ueransim-gnb:latest
       imagePullPolicy: IfNotPresent
       command: ["tail", "-f", "/dev/null"]
       securityContext:

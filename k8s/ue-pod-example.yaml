@@ -10,7 +10,7 @@ spec:
   hostNetwork: true
   containers:
     - name: ue
-      image: ghcr.io/apelgroup/mcp-ueransim-new/ueransim-ue:latest
+      image: ghcr.io/dimitrisbro/mcp-ueransim/ueransim-ue:latest
       imagePullPolicy: IfNotPresent
       command: ["tail", "-f", "/dev/null"]
       securityContext:

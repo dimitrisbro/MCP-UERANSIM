@@ -36,11 +36,11 @@ python main.py
 **Always build from the project root** — COPY paths in the Dockerfiles are relative to it:
 
 ```bash
-nerdctl build -f docker/gnb_ubuntu.Dockerfile -t ghcr.io/apelgroup/mcp-ueransim-new/ueransim-gnb:latest .
-nerdctl build -f docker/ue_ubuntu.Dockerfile  -t ghcr.io/apelgroup/mcp-ueransim-new/ueransim-ue:latest .
+nerdctl build -f docker/gnb_ubuntu.Dockerfile -t ghcr.io/dimitrisbro/mcp-ueransim/ueransim-gnb:latest .
+nerdctl build -f docker/ue_ubuntu.Dockerfile  -t ghcr.io/dimitrisbro/mcp-ueransim/ueransim-ue:latest .
 ```
 
-Images are stored in GHCR under `ghcr.io/apelgroup/mcp-ueransim-new/`.
+Images are stored in GHCR under `ghcr.io/dimitrisbro/mcp-ueransim/`.
 
 ## Kubernetes cluster
 

@@ -24,8 +24,8 @@ from .config_ops import (
     GNB_CFG, UE_CFG,
 )
 
-_GNB_IMAGE = "ghcr.io/apelgroup/mcp-ueransim-new/ueransim-gnb:latest"
-_UE_IMAGE  = "ghcr.io/apelgroup/mcp-ueransim-new/ueransim-ue:latest"
+_GNB_IMAGE = "ghcr.io/dimitrisbro/mcp-ueransim/ueransim-gnb:latest"
+_UE_IMAGE  = "ghcr.io/dimitrisbro/mcp-ueransim/ueransim-ue:latest"
 
 
 def _is_container_id(value: str) -> bool:
