@@ -203,17 +203,24 @@ def k8s_list_gnbs(namespace: str = "ueransim", kubeconfig: str = "") -> GnbListR
 
 
 @mcp.tool()
-def k8s_delete_gnb(pod_name: str, namespace: str = "ueransim", kubeconfig: str = "") -> GnbOperationResponse:
+def k8s_delete_gnb(pod_name: str, namespace: str = "ueransim", kubeconfig: str = "", confirm: bool = False) -> GnbOperationResponse:
     """Delete a gNB pod from Kubernetes.
 
     Args:
         pod_name: Pod name
         namespace: Kubernetes namespace (default: ueransim)
         kubeconfig: path to a kubeconfig file. If omitted, uses the current kubectl context.
+        confirm: must be True to authorise the delete operation.
     """
     from kubernetes import client
     from kubernetes.client.rest import ApiException
     try:
+        if not confirm:
+            return GnbOperationResponse(
+                status="error",
+                message="Refusing to delete without explicit confirmation. Pass confirm=True to proceed.",
+                container=pod_name,
+            )
         validate_container_name(pod_name, "gnb")
         v1 = get_k8s_client(kubeconfig=kubeconfig)
         v1.delete_namespaced_pod(pod_name, namespace,
@@ -533,17 +540,24 @@ def k8s_list_ues(namespace: str = "ueransim", kubeconfig: str = "") -> UeListRes
 
 
 @mcp.tool()
-def k8s_delete_ue(pod_name: str, namespace: str = "ueransim", kubeconfig: str = "") -> UeOperationResponse:
+def k8s_delete_ue(pod_name: str, namespace: str = "ueransim", kubeconfig: str = "", confirm: bool = False) -> UeOperationResponse:
     """Delete a UE pod from Kubernetes.
 
     Args:
         pod_name: Pod name
         namespace: Kubernetes namespace (default: ueransim)
         kubeconfig: path to a kubeconfig file. If omitted, uses the current kubectl context.
+        confirm: must be True to authorise the delete operation.
     """
     from kubernetes import client
     from kubernetes.client.rest import ApiException
     try:
+        if not confirm:
+            return UeOperationResponse(
+                status="error",
+                message="Refusing to delete without explicit confirmation. Pass confirm=True to proceed.",
+                container=pod_name,
+            )
         validate_container_name(pod_name, "ue")
         v1 = get_k8s_client(kubeconfig=kubeconfig)
         v1.delete_namespaced_pod(pod_name, namespace,
