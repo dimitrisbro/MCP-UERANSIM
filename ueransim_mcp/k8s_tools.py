@@ -51,6 +51,7 @@ def k8s_create_gnb(
     cell_access_type: str = "nr",
     gtp_advertise_ip: Optional[str] = None,
     ignore_stream_ids: bool = True,
+    kubeconfig: str = "",
 ) -> GnbCreateResponse:
     """Create a new gNB Pod in Kubernetes.
 
@@ -71,6 +72,7 @@ def k8s_create_gnb(
         cell_access_type: nr | nr-leo | nr-meo | nr-geo | nr-othersat
         gtp_advertise_ip: GTP advertise IP override (for NAT scenarios)
         ignore_stream_ids: Whether to ignore SCTP stream ID errors
+        kubeconfig: path to a kubeconfig file. If omitted, uses the current kubectl context.
     """
     from kubernetes import client
     from kubernetes.client.rest import ApiException
@@ -98,7 +100,7 @@ def k8s_create_gnb(
         else:
             pod_name = f"gnb-{generate_random_suffix()}"
 
-        v1 = get_k8s_client()
+        v1 = get_k8s_client(kubeconfig=kubeconfig)
         pod_body = client.V1Pod(
             metadata=client.V1ObjectMeta(
                 name=pod_name, namespace=namespace,
@@ -175,15 +177,16 @@ def k8s_create_gnb(
 
 
 @mcp.tool()
-def k8s_list_gnbs(namespace: str = "ueransim") -> GnbListResponse:
+def k8s_list_gnbs(namespace: str = "ueransim", kubeconfig: str = "") -> GnbListResponse:
     """List all gNB pods in the given Kubernetes namespace.
 
     Args:
         namespace: Kubernetes namespace (default: ueransim)
+        kubeconfig: path to a kubeconfig file. If omitted, uses the current kubectl context.
     """
     from kubernetes.client.rest import ApiException
     try:
-        v1 = get_k8s_client()
+        v1 = get_k8s_client(kubeconfig=kubeconfig)
         pods = v1.list_namespaced_pod(namespace, label_selector="type=gnb").items
         containers = [
             GnbContainer(id=p.metadata.name, name=p.metadata.name,
@@ -200,18 +203,19 @@ def k8s_list_gnbs(namespace: str = "ueransim") -> GnbListResponse:
 
 
 @mcp.tool()
-def k8s_delete_gnb(pod_name: str, namespace: str = "ueransim") -> GnbOperationResponse:
+def k8s_delete_gnb(pod_name: str, namespace: str = "ueransim", kubeconfig: str = "") -> GnbOperationResponse:
     """Delete a gNB pod from Kubernetes.
 
     Args:
         pod_name: Pod name
         namespace: Kubernetes namespace (default: ueransim)
+        kubeconfig: path to a kubeconfig file. If omitted, uses the current kubectl context.
     """
     from kubernetes import client
     from kubernetes.client.rest import ApiException
     try:
         validate_container_name(pod_name, "gnb")
-        v1 = get_k8s_client()
+        v1 = get_k8s_client(kubeconfig=kubeconfig)
         v1.delete_namespaced_pod(pod_name, namespace,
                                  body=client.V1DeleteOptions(grace_period_seconds=0))
         return GnbOperationResponse(
@@ -232,7 +236,7 @@ def k8s_delete_gnb(pod_name: str, namespace: str = "ueransim") -> GnbOperationRe
 
 @mcp.tool()
 def k8s_get_gnb_logs(
-    pod_name: str, lines: int = 100, namespace: str = "ueransim"
+    pod_name: str, lines: int = 100, namespace: str = "ueransim", kubeconfig: str = ""
 ) -> GnbOperationResponse:
     """Get logs from a gNB pod.
 
@@ -240,11 +244,12 @@ def k8s_get_gnb_logs(
         pod_name: Pod name
         lines: Number of log lines to retrieve (default: 100)
         namespace: Kubernetes namespace (default: ueransim)
+        kubeconfig: path to a kubeconfig file. If omitted, uses the current kubectl context.
     """
     from kubernetes.client.rest import ApiException
     try:
         validate_container_name(pod_name, "gnb")
-        v1 = get_k8s_client()
+        v1 = get_k8s_client(kubeconfig=kubeconfig)
         logs = v1.read_namespaced_pod_log(pod_name, namespace, tail_lines=lines)
         return GnbOperationResponse(status="success", message="Logs retrieved successfully",
                                     container=pod_name, logs=logs)
@@ -262,7 +267,8 @@ def k8s_get_gnb_logs(
 
 @mcp.tool()
 def k8s_attach_gnb_to_core(
-    pod_name: str, amf_address: str = "127.0.0.5", namespace: str = "ueransim"
+    pod_name: str, amf_address: str = "127.0.0.5", namespace: str = "ueransim",
+    kubeconfig: str = "",
 ) -> GnbOperationResponse:
     """Update AMF address and start the nr-gnb process in a gNB pod.
 
@@ -270,12 +276,13 @@ def k8s_attach_gnb_to_core(
         pod_name: gNB pod name
         amf_address: AMF IP address (default: 127.0.0.5)
         namespace: Kubernetes namespace (default: ueransim)
+        kubeconfig: path to a kubeconfig file. If omitted, uses the current kubectl context.
     """
     from kubernetes.client.rest import ApiException
     try:
         validate_ip(amf_address)
         validate_container_name(pod_name, "gnb")
-        v1 = get_k8s_client()
+        v1 = get_k8s_client(kubeconfig=kubeconfig)
 
         exec_in_pod(v1, pod_name, namespace,
                     ["sed", "-i", f"s/- address: .*/- address: {amf_address}/", GNB_CFG])
@@ -313,16 +320,17 @@ def k8s_attach_gnb_to_core(
 # ── Common tools ──────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def k8s_inspect_pod_ip(pod_name: str, namespace: str = "ueransim") -> GnbOperationResponse:
+def k8s_inspect_pod_ip(pod_name: str, namespace: str = "ueransim", kubeconfig: str = "") -> GnbOperationResponse:
     """Return the IP address of a Kubernetes pod.
 
     Args:
         pod_name: Pod name
         namespace: Kubernetes namespace (default: ueransim)
+        kubeconfig: path to a kubeconfig file. If omitted, uses the current kubectl context.
     """
     from kubernetes.client.rest import ApiException
     try:
-        v1 = get_k8s_client()
+        v1 = get_k8s_client(kubeconfig=kubeconfig)
         pod_ip = v1.read_namespaced_pod(pod_name, namespace).status.pod_ip
         if not pod_ip:
             return GnbOperationResponse(
@@ -362,6 +370,7 @@ def k8s_create_ue(
     session_apn: str = "internet",
     session_type: str = "IPv4",
     tun_netmask: str = "255.255.255.0",
+    kubeconfig: str = "",
 ) -> UeCreateResponse:
     """Create a new UE Pod in Kubernetes.
 
@@ -382,6 +391,7 @@ def k8s_create_ue(
         session_apn: PDU session APN
         session_type: IPv4 | IPv6 | IPv4v6
         tun_netmask: TUN interface netmask
+        kubeconfig: path to a kubeconfig file. If omitted, uses the current kubectl context.
     """
     from kubernetes import client
     from kubernetes.client.rest import ApiException
@@ -395,9 +405,9 @@ def k8s_create_ue(
     )
     try:
         if gnb_search_list == "auto":
-            gnb_list = k8s_list_gnbs(namespace)
+            gnb_list = k8s_list_gnbs(namespace, kubeconfig=kubeconfig)
             if gnb_list.status == "success" and gnb_list.count > 0:
-                ip_result = k8s_inspect_pod_ip(gnb_list.containers[0].name, namespace)
+                ip_result = k8s_inspect_pod_ip(gnb_list.containers[0].name, namespace, kubeconfig=kubeconfig)
                 gnb_search_list = ip_result.logs if ip_result.status == "success" else "127.0.0.1"
             else:
                 gnb_search_list = "127.0.0.1"
@@ -419,7 +429,7 @@ def k8s_create_ue(
         else:
             pod_name = f"ue-{generate_random_suffix()}"
 
-        v1 = get_k8s_client()
+        v1 = get_k8s_client(kubeconfig=kubeconfig)
         pod_body = client.V1Pod(
             metadata=client.V1ObjectMeta(
                 name=pod_name, namespace=namespace,
@@ -497,15 +507,16 @@ def k8s_create_ue(
 
 
 @mcp.tool()
-def k8s_list_ues(namespace: str = "ueransim") -> UeListResponse:
+def k8s_list_ues(namespace: str = "ueransim", kubeconfig: str = "") -> UeListResponse:
     """List all UE pods in the given Kubernetes namespace.
 
     Args:
         namespace: Kubernetes namespace (default: ueransim)
+        kubeconfig: path to a kubeconfig file. If omitted, uses the current kubectl context.
     """
     from kubernetes.client.rest import ApiException
     try:
-        v1 = get_k8s_client()
+        v1 = get_k8s_client(kubeconfig=kubeconfig)
         pods = v1.list_namespaced_pod(namespace, label_selector="type=ue").items
         containers = [
             UeContainer(id=p.metadata.name, name=p.metadata.name,
@@ -522,18 +533,19 @@ def k8s_list_ues(namespace: str = "ueransim") -> UeListResponse:
 
 
 @mcp.tool()
-def k8s_delete_ue(pod_name: str, namespace: str = "ueransim") -> UeOperationResponse:
+def k8s_delete_ue(pod_name: str, namespace: str = "ueransim", kubeconfig: str = "") -> UeOperationResponse:
     """Delete a UE pod from Kubernetes.
 
     Args:
         pod_name: Pod name
         namespace: Kubernetes namespace (default: ueransim)
+        kubeconfig: path to a kubeconfig file. If omitted, uses the current kubectl context.
     """
     from kubernetes import client
     from kubernetes.client.rest import ApiException
     try:
         validate_container_name(pod_name, "ue")
-        v1 = get_k8s_client()
+        v1 = get_k8s_client(kubeconfig=kubeconfig)
         v1.delete_namespaced_pod(pod_name, namespace,
                                  body=client.V1DeleteOptions(grace_period_seconds=0))
         return UeOperationResponse(
@@ -554,7 +566,7 @@ def k8s_delete_ue(pod_name: str, namespace: str = "ueransim") -> UeOperationResp
 
 @mcp.tool()
 def k8s_get_ue_logs(
-    pod_name: str, lines: int = 100, namespace: str = "ueransim"
+    pod_name: str, lines: int = 100, namespace: str = "ueransim", kubeconfig: str = ""
 ) -> UeOperationResponse:
     """Get logs from a UE pod.
 
@@ -562,11 +574,12 @@ def k8s_get_ue_logs(
         pod_name: Pod name
         lines: Number of log lines to retrieve (default: 100)
         namespace: Kubernetes namespace (default: ueransim)
+        kubeconfig: path to a kubeconfig file. If omitted, uses the current kubectl context.
     """
     from kubernetes.client.rest import ApiException
     try:
         validate_container_name(pod_name, "ue")
-        v1 = get_k8s_client()
+        v1 = get_k8s_client(kubeconfig=kubeconfig)
         logs = v1.read_namespaced_pod_log(pod_name, namespace, tail_lines=lines)
         return UeOperationResponse(status="success", message="Logs retrieved successfully",
                                    container=pod_name, logs=logs)
@@ -584,7 +597,7 @@ def k8s_get_ue_logs(
 
 @mcp.tool()
 def k8s_attach_ue_to_gnb(
-    ue_pod_name: str, gnb_pod_name: str, namespace: str = "ueransim"
+    ue_pod_name: str, gnb_pod_name: str, namespace: str = "ueransim", kubeconfig: str = "",
 ) -> UeOperationResponse:
     """Update the UE's gnbSearchList with the gNB pod IP and start nr-ue.
 
@@ -592,14 +605,15 @@ def k8s_attach_ue_to_gnb(
         ue_pod_name: UE pod name
         gnb_pod_name: gNB pod name
         namespace: Kubernetes namespace (default: ueransim)
+        kubeconfig: path to a kubeconfig file. If omitted, uses the current kubectl context.
     """
     from kubernetes.client.rest import ApiException
     try:
         validate_container_name(ue_pod_name, "ue")
         validate_container_name(gnb_pod_name, "gnb")
-        v1 = get_k8s_client()
+        v1 = get_k8s_client(kubeconfig=kubeconfig)
 
-        gnb_ip_result = k8s_inspect_pod_ip(gnb_pod_name, namespace)
+        gnb_ip_result = k8s_inspect_pod_ip(gnb_pod_name, namespace, kubeconfig=kubeconfig)
         if gnb_ip_result.status != "success" or not gnb_ip_result.logs:
             return UeOperationResponse(
                 status="error",
@@ -659,6 +673,7 @@ def k8s_edit_pod_config(
     config_type: str = "gnb_search_list",
     config_value: str = "127.0.0.1",
     namespace: str = "ueransim",
+    kubeconfig: str = "",
 ) -> UeOperationResponse:
     """Edit a configuration field inside an existing pod.
 
@@ -671,10 +686,11 @@ def k8s_edit_pod_config(
             session_type, tun_netmask, slice (value: "sst" or "sst,sd").
         config_value: New value as a string
         namespace: Kubernetes namespace (default: ueransim)
+        kubeconfig: path to a kubeconfig file. If omitted, uses the current kubectl context.
     """
     from kubernetes.client.rest import ApiException
     try:
-        v1 = get_k8s_client()
+        v1 = get_k8s_client(kubeconfig=kubeconfig)
         v1.read_namespaced_pod(pod_name, namespace)  # verify pod exists
 
         ctype = _pod_type(pod_name)

@@ -2,16 +2,24 @@ import time
 from typing import List
 
 
-def get_k8s_client():
-    """Return a CoreV1Api client, trying in-cluster config then local kubeconfig."""
-    from kubernetes import client, config
+def _load_k8s_config(kubeconfig: str = "") -> None:
+    from kubernetes import config
     from kubernetes.config.config_exception import ConfigException
 
+    if kubeconfig:
+        config.load_kube_config(config_file=kubeconfig)
+        return
     try:
         config.load_incluster_config()
     except ConfigException:
         config.load_kube_config()
 
+
+def get_k8s_client(kubeconfig: str = ""):
+    """Return a CoreV1Api client. kubeconfig overrides in-cluster/default context."""
+    from kubernetes import client
+
+    _load_k8s_config(kubeconfig)
     return client.CoreV1Api()
 
 
