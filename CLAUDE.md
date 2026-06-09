@@ -83,3 +83,54 @@ Valid values: `nr`, `nr-leo`, `nr-meo`, `nr-geo`, `nr-othersat` (NTN satellite t
 ```bash
 python3 -c "from ueransim_mcp.app import mcp; import ueransim_mcp.docker_tools, ueransim_mcp.k8s_tools; print([t.name for t in mcp._tool_manager._tools.values()])"
 ```
+
+## Packaging the MCP server as a Docker image
+
+The MCP server is distributed as a Docker image so consumers don't need to clone the repo or manage a Python environment. The image uses **stdio transport**: the agent spawns the container, pipes JSON-RPC over stdin/stdout, and tears it down when done.
+
+### Dockerfile (`docker/mcp/server.Dockerfile`)
+
+Always build from the project root:
+
+```bash
+nerdctl build -f docker/mcp/server.Dockerfile -t ghcr.io/dimitrisbro/mcp-ueransim/server:latest .
+nerdctl push ghcr.io/dimitrisbro/mcp-ueransim/server:latest
+```
+
+Login to GHCR once before pushing (needs a GitHub PAT with `write:packages`):
+
+```bash
+nerdctl login ghcr.io -u dimitrisbro
+```
+
+### Agent config
+
+```json
+{
+  "mcpServers": {
+    "ueransim": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-v", "/var/run/docker.sock:/var/run/docker.sock",
+        "-v", "/Users/dimitris/.kube:/root/.kube:ro",
+        "ghcr.io/dimitrisbro/mcp-ueransim/server:latest"
+      ]
+    }
+  }
+}
+```
+
+The `-i` flag is mandatory — it keeps stdin open for stdio transport.
+
+### Rules for any MCP server Dockerfile
+
+1. **Keep stdout clean.** Any `print()` or log line written to stdout before `mcp.run()` is called will corrupt the JSON-RPC framing and cause the client to drop the connection immediately. Route all banners and diagnostics to `stderr`.
+
+2. **Install every CLI the server shells out to.** `python:3.12-slim` ships no `docker` or `kubectl` binary. If the server calls `subprocess.run(["docker", ...])`, add `RUN apt-get install -y docker.io` (or copy the static binary). Check all `subprocess` / `shutil.which` calls in `*_utils.py`.
+
+3. **Pin dependencies.** `requirements.txt` must use exact versions (`mcp==X.Y.Z`, `kubernetes==X.Y.Z`). Bare names let a breaking upstream release silently enter the image on a rebuild with no visible git diff.
+
+4. **Handle PID 1 shutdown.** Python ignores SIGTERM by default when running as PID 1, so `docker stop` waits the full 10 s before SIGKILL. Either add `tini` (`RUN apt-get install -y tini` + `ENTRYPOINT ["tini", "--"]`) or register a signal handler in `main.py`.
+
+5. **Don't run as root if mounting the Docker socket.** Add a non-root user and add it to the `docker` group, or document the accepted risk explicitly.
