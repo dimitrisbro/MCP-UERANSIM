@@ -134,3 +134,128 @@ The `-i` flag is mandatory — it keeps stdin open for stdio transport.
 4. **Handle PID 1 shutdown.** Python ignores SIGTERM by default when running as PID 1, so `docker stop` waits the full 10 s before SIGKILL. Either add `tini` (`RUN apt-get install -y tini` + `ENTRYPOINT ["tini", "--"]`) or register a signal handler in `main.py`.
 
 5. **Don't run as root if mounting the Docker socket.** Add a non-root user and add it to the `docker` group, or document the accepted risk explicitly.
+
+---
+
+## Autonomous Overnight Work
+
+When Claude Code is launched by `run_overnight.sh` you are already inside a git worktree
+for a single GitHub issue. No human is watching. Follow these steps exactly.
+
+### Context when you start
+- Working directory: a git worktree at `MCP-UERANSIM/.worktrees/issue-<N>`
+- Branch pre-created: `claude-overnight/issue-<N>`
+- Issue number `<N>` was passed in your initial prompt
+
+### Step 1 — Read the issue
+```bash
+gh issue view <N> --repo dimitrisbro/MCP-UERANSIM
+```
+Read the full body and all comments before writing any code.
+
+### Step 2 — Understand the existing code
+- Read the relevant `*_tools.py`, `models.py`, `validators.py`, `config_ops.py`
+- Follow the FastMCP patterns in this CLAUDE.md and in the workspace root CLAUDE.md
+- Do not add new dependencies without updating `requirements.txt`
+
+### Step 3 — Decide: implement or decompose?
+
+**Decompose** if the issue requires changes across 3+ distinct modules, or would take
+multiple coherent sessions to implement properly. In that case:
+1. `gh issue edit <N> --repo dimitrisbro/MCP-UERANSIM --remove-label claude-overnight`
+2. Create up to **3** sub-issues (max — never more):
+   ```bash
+   gh issue create --repo dimitrisbro/MCP-UERANSIM \
+     --label "claude-overnight,sub-issue" \
+     --title "<atomic scope>" \
+     --body "Child of #<N>\n\n<clear, unambiguous scope>"
+   ```
+3. Post a summary comment on `#<N>` listing the sub-issue numbers
+4. Exit without committing anything
+
+Sub-issues must **never** themselves decompose further.
+
+**Implement** if the issue is atomic (one tool, one bug fix, one validator).
+
+### Step 4 — Implement
+- Add Pydantic models to `models.py` first
+- Add validators to `validators.py`
+- Add config generators to `config_ops.py` (return `List[List[str]]`)
+- Add the `@mcp.tool()` function to `docker_tools.py` or `k8s_tools.py`
+- Never change `app.py` or `server.py` unless the issue targets them
+
+### Step 5 — Run the tests
+This repo has no test suite yet. Skip this step and note "No tests defined" in the PR body.
+
+Verify tool registration still works:
+```bash
+python3 -c "from ueransim_mcp.app import mcp; import ueransim_mcp.docker_tools, ueransim_mcp.k8s_tools; print([t.name for t in mcp._tool_manager._tools.values()])"
+```
+If this errors, fix it before continuing.
+
+### Step 6 — Update documentation
+Scan `CLAUDE.md` and `README.md` for any sections affected by your changes and update them. Common targets:
+
+- **CLAUDE.md** "Project layout" code block — add any new modules
+- **CLAUDE.md** "Adding new tools" checklist — still accurate?
+- **CLAUDE.md** "Key design decisions" — add a bullet if you introduced a non-obvious pattern
+- **README.md** tool count (e.g. "24 tools total"), tool description tables, any usage examples
+
+Rules:
+- Only update what is factually affected — do not rewrite unrelated sections
+- Do not update the Kubernetes cluster IP or UERANSIM version sections unless the issue targets those specifically
+- Include these changes in the **same commit** as the code (next step)
+
+### Step 7 — Commit
+```bash
+git add -p
+git commit -m "feat: <description> (#<N>)"
+```
+
+### Step 8 — Push
+```bash
+git push -u origin claude-overnight/issue-<N>
+```
+
+### Step 9 — Open a draft PR
+```bash
+gh pr create \
+  --repo dimitrisbro/MCP-UERANSIM \
+  --base main \
+  --head claude-overnight/issue-<N> \
+  --draft \
+  --title "<short description> (#<N>)" \
+  --body "$(cat <<'EOF'
+## Summary
+Closes #<N>
+
+<1-3 bullet points>
+
+## Changes
+<file>: <what changed>
+
+## Test results
+No tests defined for this repo.
+
+## Notes for reviewer
+<anything non-obvious>
+
+🤖 Generated autonomously by Claude Code overnight pipeline
+EOF
+)"
+```
+
+### Ambiguity escape
+If you are blocked by genuine ambiguity that prevents correct implementation:
+```bash
+gh issue comment <N> --repo dimitrisbro/MCP-UERANSIM \
+  --body "Overnight session blocked: <specific question>. Exiting without committing."
+```
+Then exit cleanly. Do not commit partial work.
+
+### Hard constraints
+- Never modify `app.py` or `server.py` unless the issue explicitly targets them
+- Never delete existing code without a direct instruction
+- Never force-push (`git push --force`)
+- Never merge the PR — leave it as draft for human review
+- Never create more than 3 sub-issues per decomposition
