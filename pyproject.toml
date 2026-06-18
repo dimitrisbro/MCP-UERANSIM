@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ueransim-mcp"
+version = "0.1.0"
+dependencies = ["mcp", "kubernetes"]
+
+[project.scripts]
+ueransim-mcp = "ueransim_mcp.server:start_server"
+
+[tool.setuptools]
+packages = ["ueransim_mcp"]

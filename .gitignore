@@ -1,4 +1,33 @@
-__pycache__
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+
+# Kubernetes configs (never commit credentials)
+kubeconfig*
+*.kubeconfig
+
 # Overnight pipeline
 .worktrees/
 logs/
