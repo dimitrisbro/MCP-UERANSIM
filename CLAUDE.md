@@ -259,3 +259,11 @@ Then exit cleanly. Do not commit partial work.
 - Never force-push (`git push --force`)
 - Never merge the PR — leave it as draft for human review
 - Never create more than 3 sub-issues per decomposition
+- If you build and push a Docker image, **always tag it `overnight-issue-<N>`** — never push to `:latest`
+  ```bash
+  # Correct:
+  nerdctl build -f docker/mcp/server.Dockerfile \
+    -t ghcr.io/dimitrisbro/mcp-ueransim/server:overnight-issue-<N> .
+  nerdctl push ghcr.io/dimitrisbro/mcp-ueransim/server:overnight-issue-<N>
+  # Wrong: never tag or push :latest
+  ```
