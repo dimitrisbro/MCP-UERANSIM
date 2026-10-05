@@ -239,8 +239,6 @@ No tests defined for this repo.
 
 ## Notes for reviewer
 <anything non-obvious>
-
-🤖 Generated autonomously by Claude Code overnight pipeline
 EOF
 )"
 ```
