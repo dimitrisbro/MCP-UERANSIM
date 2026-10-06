@@ -509,7 +509,9 @@ def k8s_create_ue(
                 labels={"app": "ueransim", "type": "ue"},
             ),
             spec=client.V1PodSpec(
-                host_network=True,
+                # Own network namespace, as the infra/ UE pools: with hostNetwork the UE's
+                # uesimtun address lives on the node, and a UPF on the same node drops/keeps
+                # the replies locally (no user-plane traffic) and its ip rules leak.
                 image_pull_secrets=[client.V1LocalObjectReference(name=image_pull_secret)],
                 containers=[client.V1Container(
                     name="ue", image=ue_image, image_pull_policy="IfNotPresent",

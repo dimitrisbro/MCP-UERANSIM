@@ -32,12 +32,14 @@ FROM ubuntu:22.04
 # Install only runtime dependencies
 # procps: provides pgrep (used by MCP server for process status checks)
 # mawk:   provides awk  (used by MCP server for slice/config block rewrites)
+# iputils-ping: user-plane check through the PDU session (ping -I uesimtun0 ...)
 RUN apt-get update && apt-get install -y \
     libsctp-dev \
     lksctp-tools \
     iproute2 \
     procps \
     mawk \
+    iputils-ping \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /usr/share/doc/* \
     && rm -rf /usr/share/man/* \

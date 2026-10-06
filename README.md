@@ -273,7 +273,7 @@ ue = k8s_create_ue(
 
 **gNB pod** — `NET_ADMIN` capability, regular pod networking.
 
-**UE pod** — `privileged`, `NET_ADMIN`, `hostNetwork: true`, `/dev/net/tun` device mounted. Requires the cluster's admission policy to allow privileged pods (set `PodSecurity` to `privileged` profile on the namespace).
+**UE pod** — `privileged`, `NET_ADMIN`, `/dev/net/tun` device mounted, own network namespace (no `hostNetwork`: a UPF on the same node could not route the UE's traffic). Requires the cluster's admission policy to allow privileged pods (set `PodSecurity` to `privileged` profile on the namespace).
 
 ## Configuration
 

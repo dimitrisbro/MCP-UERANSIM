@@ -144,7 +144,11 @@ def test_create_ue_runs_nr_ue_from_its_own_config_map(v1) -> None:
     assert result.status == "success"
     _, cm = v1.create_namespaced_config_map.call_args.args
     assert yaml.safe_load(cm.data["open5gs-ue.yaml"])["gnbSearchList"] == ["10.0.0.9"]
-    container = v1.create_namespaced_pod.call_args.kwargs["body"].spec.containers[0]
+    spec = v1.create_namespaced_pod.call_args.kwargs["body"].spec
+    container = spec.containers[0]
+    assert not spec.host_network
+    assert container.security_context.privileged
+    assert "/dev/net/tun" in [m.mount_path for m in container.volume_mounts]
     assert container.command == ue_pod_command()
     assert UE_CFG in [m.mount_path for m in container.volume_mounts]
 
