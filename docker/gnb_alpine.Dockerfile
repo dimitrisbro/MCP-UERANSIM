@@ -10,7 +10,9 @@ RUN apk add --no-cache \
 
 # Clone UERANSIM
 WORKDIR /opt
-RUN git clone https://github.com/aligungr/UERANSIM.git
+# Pinned release tag: an unpinned clone takes whatever master is on each rebuild.
+ARG UERANSIM_VERSION=v3.3.0
+RUN git clone --depth 1 --branch ${UERANSIM_VERSION} https://github.com/aligungr/UERANSIM.git
 WORKDIR /opt/UERANSIM
 
 # Build UERANSIM

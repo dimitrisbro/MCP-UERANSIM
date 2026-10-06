@@ -18,7 +18,9 @@ RUN apt-get update && apt-get install -y \
 
 # Clone UERANSIM
 WORKDIR /opt
-RUN git clone https://github.com/aligungr/UERANSIM.git
+# Pinned release tag: an unpinned clone takes whatever master is on each rebuild.
+ARG UERANSIM_VERSION=v3.3.0
+RUN git clone --depth 1 --branch ${UERANSIM_VERSION} https://github.com/aligungr/UERANSIM.git
 
 # Compile UERANSIM
 WORKDIR /opt/UERANSIM

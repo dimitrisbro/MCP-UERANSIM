@@ -1,2 +1,2 @@
-mcp==1.27.2
-kubernetes==36.0.2
+mcp==1.30.0
+kubernetes==36.0.3

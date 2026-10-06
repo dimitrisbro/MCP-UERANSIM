@@ -21,8 +21,8 @@ from .config_ops import (
     gnb_pod_command, ue_pod_command, GNB_CFG, UE_CFG,
 )
 
-_GNB_IMAGE = "ghcr.io/dimitrisbro/mcp-ueransim/ueransim-gnb:latest"
-_UE_IMAGE  = "ghcr.io/dimitrisbro/mcp-ueransim/ueransim-ue:latest"
+_GNB_IMAGE = "ghcr.io/dimitrisbro/mcp-ueransim/ueransim-gnb:3.3.0"
+_UE_IMAGE  = "ghcr.io/dimitrisbro/mcp-ueransim/ueransim-ue:3.3.0"
 
 
 def _pod_type(pod_name: str) -> str:

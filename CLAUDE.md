@@ -36,8 +36,10 @@ python main.py
 **Always build from the project root** — COPY paths in the Dockerfiles are relative to it:
 
 ```bash
-nerdctl build -f docker/gnb_ubuntu.Dockerfile -t ghcr.io/dimitrisbro/mcp-ueransim/ueransim-gnb:latest .
-nerdctl build -f docker/ue_ubuntu.Dockerfile  -t ghcr.io/dimitrisbro/mcp-ueransim/ueransim-ue:latest .
+docker buildx build --builder multiarch-builder --platform linux/amd64,linux/arm64 -f docker/gnb_ubuntu.Dockerfile \
+  -t ghcr.io/dimitrisbro/mcp-ueransim/ueransim-gnb:3.3.0 -t ghcr.io/dimitrisbro/mcp-ueransim/ueransim-gnb:latest --push .
+docker buildx build --builder multiarch-builder --platform linux/amd64,linux/arm64 -f docker/ue_ubuntu.Dockerfile \
+  -t ghcr.io/dimitrisbro/mcp-ueransim/ueransim-ue:3.3.0 -t ghcr.io/dimitrisbro/mcp-ueransim/ueransim-ue:latest --push .
 ```
 
 Images are stored in GHCR under `ghcr.io/dimitrisbro/mcp-ueransim/`.
@@ -45,7 +47,7 @@ Images are stored in GHCR under `ghcr.io/dimitrisbro/mcp-ueransim/`.
 ## Tests
 
 ```bash
-uv run --no-project --with pytest --with kubernetes==36.0.2 --with mcp==1.27.2 python -m pytest tests -q
+uv run --no-project --with pytest --with kubernetes==36.0.3 --with mcp==1.30.0 python -m pytest tests -q
 ```
 
 `tests/test_k8s_tools.py` covers the K8s pod commands, ConfigMap building/edits and the
@@ -77,7 +79,9 @@ create/attach/edit/delete tools against a mocked Kubernetes API.
 
 ## UERANSIM version
 
-Targets **v3.2.8**. The `cellAccessType` field (added in v3.2.8) is present in `config/open5gs-gnb.yaml`.
+Targets **v3.3.0**, pinned by `ARG UERANSIM_VERSION` in the gNB/UE Dockerfiles; images are tagged
+`:3.3.0` (and `latest`), and the tools default to the `:3.3.0` images. The `cellAccessType` field is
+present in `config/open5gs-gnb.yaml`.
 Valid values: `nr`, `nr-leo`, `nr-meo`, `nr-geo`, `nr-othersat` (NTN satellite types).
 
 ## Adding new tools
