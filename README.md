@@ -96,7 +96,7 @@ All Kubernetes tools mirror their Docker counterparts and default to the `uerans
 | `k8s_list_gnbs` | List all gNB pods | `namespace`, `kubeconfig` |
 | `k8s_delete_gnb` | Delete a gNB pod | `pod_name`, `namespace`, `kubeconfig` |
 | `k8s_get_gnb_logs` | Get logs from a gNB pod | `pod_name`, `lines`, `namespace`, `kubeconfig` |
-| `k8s_attach_gnb_to_core` | Start nr-gnb and connect to AMF | `pod_name`, `amf_address`, `namespace`, `kubeconfig` |
+| `k8s_attach_gnb_to_core` | Point the gNB at an AMF (updates its ConfigMap, recreates the pod) | `pod_name`, `amf_address`, `namespace`, `kubeconfig` |
 
 #### UE
 
@@ -106,14 +106,14 @@ All Kubernetes tools mirror their Docker counterparts and default to the `uerans
 | `k8s_list_ues` | List all UE pods | `namespace`, `kubeconfig` |
 | `k8s_delete_ue` | Delete a UE pod | `pod_name`, `namespace`, `kubeconfig` |
 | `k8s_get_ue_logs` | Get logs from a UE pod | `pod_name`, `lines`, `namespace`, `kubeconfig` |
-| `k8s_attach_ue_to_gnb` | Start nr-ue and connect to gNB | `ue_pod_name`, `gnb_pod_name`, `namespace`, `kubeconfig` |
+| `k8s_attach_ue_to_gnb` | Point the UE at a gNB pod's IP (updates its ConfigMap, recreates the pod) | `ue_pod_name`, `gnb_pod_name`, `namespace`, `kubeconfig` |
 
 #### Common
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
 | `k8s_inspect_pod_ip` | Get a pod's IP address | `pod_name`, `namespace`, `kubeconfig` |
-| `k8s_edit_pod_config` | Edit config in a running pod | `pod_name`, `config_type`, `config_value`, `namespace`, `kubeconfig` |
+| `k8s_edit_pod_config` | Edit one config field (updates the pod's ConfigMap, recreates the pod) | `pod_name`, `config_type`, `config_value`, `namespace`, `kubeconfig` |
 
 ## Installation
 
@@ -223,19 +223,26 @@ kubectl create secret docker-registry ghcr-pull-secret \
 ### 3. Kubernetes Workflow
 
 ```
-k8s_create_gnb  ──►  k8s_attach_gnb_to_core  ──►  (gNB pod running, nr-gnb active)
-k8s_create_ue   ──►  k8s_attach_ue_to_gnb    ──►  (UE pod running, nr-ue active)
+k8s_create_gnb  ──►  (gNB pod running, nr-gnb active)
+k8s_create_ue   ──►  (UE pod running, nr-ue active)
 ```
+
+Unlike the Docker tools, K8s pods start `nr-gnb`/`nr-ue` as PID 1. Each pod reads its
+config from a ConfigMap mounted read-only at `/etc/ueransim/` (`<pod>-config`, created by
+the create tools; the gNB command fills `__POD_IP__` with the pod IP). The attach and
+edit tools change that ConfigMap and recreate the pod — a pod without such a ConfigMap
+(e.g. one created by an older version) is refused. `k8s_delete_*` also removes the
+ConfigMap if the create tools made it (label `app.kubernetes.io/managed-by=ueransim-mcp`).
 
 #### Example
 
 ```python
-# 1. Create pods
+# 1. Create pods (processes start immediately)
 gnb = k8s_create_gnb(amf_address="192.168.100.1", namespace="ueransim")
 ue  = k8s_create_ue(gnb_search_list="auto", namespace="ueransim")
 
-# 2. Start processes
-k8s_attach_gnb_to_core(pod_name=gnb.container_name, amf_address="192.168.100.1")
+# 2. Re-point later (recreates the pod)
+k8s_attach_gnb_to_core(pod_name=gnb.container_name, amf_address="192.168.100.2")
 k8s_attach_ue_to_gnb(
     ue_pod_name=ue.container_name,
     gnb_pod_name=gnb.container_name

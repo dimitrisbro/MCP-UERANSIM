@@ -12,11 +12,13 @@ from .validators import (
     validate_mcc, validate_mnc, validate_nci, validate_cell_access_type,
     validate_op_type, validate_session_type, validate_supi, validate_hex_key,
 )
-from .k8s_utils import get_k8s_client, exec_in_pod, wait_for_pod_running
+from .k8s_utils import (
+    MANAGED_BY, get_k8s_client, exec_in_pod, pod_config_map, recreate_pod,
+    wait_for_pod_running,
+)
 from .config_ops import (
-    gnb_config_cmds, ue_config_cmds,
-    gnb_slice_cmds, ue_slice_cmds, gnb_gtp_advertise_cmds,
-    GNB_CFG, UE_CFG,
+    apply_config_edit, build_gnb_config, build_ue_config, dump_config, load_template,
+    gnb_pod_command, ue_pod_command, GNB_CFG, UE_CFG,
 )
 
 _GNB_IMAGE = "ghcr.io/dimitrisbro/mcp-ueransim/ueransim-gnb:latest"
@@ -29,6 +31,67 @@ def _pod_type(pod_name: str) -> str:
     if pod_name.startswith("ue-"):
         return "ue"
     return "unknown"
+
+
+def _config_map(name: str, namespace: str, filename: str, cfg: dict):
+    from kubernetes import client
+
+    return client.V1ConfigMap(
+        metadata=client.V1ObjectMeta(name=name, namespace=namespace, labels=dict(MANAGED_BY)),
+        data={filename: dump_config(cfg)},
+    )
+
+
+def _config_mount(cfg_path: str):
+    """Mount the pod's ConfigMap at cfg_path (read-only subPath), as infra/ does."""
+    from kubernetes import client
+
+    return client.V1VolumeMount(
+        name="config", mount_path=cfg_path, sub_path=cfg_path.rsplit("/", 1)[1]
+    )
+
+
+def _edit_pod_config(v1, pod_name: str, namespace: str, cfg_path: str, edit) -> bool:
+    """Apply edit(cfg) to the YAML in the pod's ConfigMap, then recreate the pod.
+
+    Returns True once the recreated pod is Running.
+    """
+    import yaml
+
+    pod = v1.read_namespaced_pod(pod_name, namespace)
+    cm_name, key = pod_config_map(pod, cfg_path)
+    cm = v1.read_namespaced_config_map(cm_name, namespace)
+    cfg = yaml.safe_load(cm.data[key])
+    edit(cfg)
+    v1.patch_namespaced_config_map(cm_name, namespace, {"data": {key: dump_config(cfg)}})
+    return recreate_pod(v1, pod)
+
+
+def _process_running(v1, pod_name: str, namespace: str, binary: str) -> tuple:
+    """(running, output) for an exact process-name match (pgrep -f matched its own sh -c)."""
+    out, _ = exec_in_pod(
+        v1, pod_name, namespace,
+        ["sh", "-c", f"pgrep -x {binary} >/dev/null && echo '{binary} is running'"
+                     f" || echo '{binary} not found'"],
+    )
+    return f"{binary} is running" in out, out
+
+
+def _delete_managed_config_map(v1, pod, cfg_path: str) -> None:
+    """Delete the pod's ConfigMap only if the create tools made it (infra/ owns its own)."""
+    from kubernetes.client.rest import ApiException
+
+    try:
+        cm_name, _ = pod_config_map(pod, cfg_path)
+    except ValueError:
+        return
+    cm = v1.read_namespaced_config_map(cm_name, pod.metadata.namespace)
+    if (cm.metadata.labels or {}).items() >= MANAGED_BY.items():
+        try:
+            v1.delete_namespaced_config_map(cm_name, pod.metadata.namespace)
+        except ApiException as e:
+            if e.status != 404:
+                raise
 
 
 # ── gNB tools ─────────────────────────────────────────────────────────────────
@@ -100,7 +163,18 @@ def k8s_create_gnb(
         else:
             pod_name = f"gnb-{generate_random_suffix()}"
 
+        cfg = build_gnb_config(
+            amf_address=amf_address, amf_port=amf_port,
+            mcc=mcc, mnc=mnc, tac=tac, nci=nci, id_length=id_length,
+            slice_sst=slice_sst, slice_sd=slice_sd,
+            cell_access_type=cell_access_type,
+            gtp_advertise_ip=gtp_advertise_ip,
+            ignore_stream_ids=ignore_stream_ids,
+        )
         v1 = get_k8s_client(kubeconfig=kubeconfig)
+        v1.create_namespaced_config_map(
+            namespace, _config_map(f"{pod_name}-config", namespace, "open5gs-gnb.yaml", cfg)
+        )
         pod_body = client.V1Pod(
             metadata=client.V1ObjectMeta(
                 name=pod_name, namespace=namespace,
@@ -110,10 +184,15 @@ def k8s_create_gnb(
                 image_pull_secrets=[client.V1LocalObjectReference(name=image_pull_secret)],
                 containers=[client.V1Container(
                     name="gnb", image=gnb_image, image_pull_policy="IfNotPresent",
-                    command=["tail", "-f", "/dev/null"],
+                    command=gnb_pod_command(),
                     security_context=client.V1SecurityContext(
                         capabilities=client.V1Capabilities(add=["NET_ADMIN"])
                     ),
+                    volume_mounts=[_config_mount(GNB_CFG)],
+                )],
+                volumes=[client.V1Volume(
+                    name="config",
+                    config_map=client.V1ConfigMapVolumeSource(name=f"{pod_name}-config"),
                 )],
             ),
         )
@@ -126,29 +205,8 @@ def k8s_create_gnb(
                 message=f"Pod {pod_name} did not reach Running state within 60s",
             )
 
+        # The pod command replaces the __POD_IP__ placeholders with this IP.
         pod_ip = v1.read_namespaced_pod(pod_name, namespace).status.pod_ip or ""
-
-        # Update interface IPs and AMF address
-        for pattern in [
-            f"s/linkIp: .*/linkIp: {pod_ip}/",
-            f"s/ngapIp: .*/ngapIp: {pod_ip}/",
-            f"s/gtpIp: .*/gtpIp: {pod_ip}/",
-        ]:
-            exec_in_pod(v1, pod_name, namespace, ["sed", "-i", pattern, GNB_CFG])
-
-        exec_in_pod(v1, pod_name, namespace,
-                    ["sed", "-i", f"s/- address: .*/- address: {amf_address}/", GNB_CFG])
-
-        # Apply additional parametric config
-        for cmd in gnb_config_cmds(
-            mcc=mcc, mnc=mnc, tac=tac, nci=nci, id_length=id_length,
-            slice_sst=slice_sst, slice_sd=slice_sd,
-            cell_access_type=cell_access_type,
-            gtp_advertise_ip=gtp_advertise_ip,
-            ignore_stream_ids=ignore_stream_ids,
-            amf_port=amf_port,
-        ):
-            exec_in_pod(v1, pod_name, namespace, cmd)
 
         return GnbCreateResponse(
             status="success", container_id=pod_name, container_name=pod_name,
@@ -223,8 +281,10 @@ def k8s_delete_gnb(pod_name: str, namespace: str = "ueransim", kubeconfig: str =
             )
         validate_container_name(pod_name, "gnb")
         v1 = get_k8s_client(kubeconfig=kubeconfig)
+        pod = v1.read_namespaced_pod(pod_name, namespace)
         v1.delete_namespaced_pod(pod_name, namespace,
                                  body=client.V1DeleteOptions(grace_period_seconds=0))
+        _delete_managed_config_map(v1, pod, GNB_CFG)
         return GnbOperationResponse(
             status="success", message=f"Pod {pod_name} deleted from namespace {namespace}",
             container=pod_name,
@@ -277,7 +337,7 @@ def k8s_attach_gnb_to_core(
     pod_name: str, amf_address: str = "127.0.0.5", namespace: str = "ueransim",
     kubeconfig: str = "",
 ) -> GnbOperationResponse:
-    """Update AMF address and start the nr-gnb process in a gNB pod.
+    """Point a gNB pod at an AMF: update its ConfigMap and recreate the pod.
 
     Args:
         pod_name: gNB pod name
@@ -291,25 +351,21 @@ def k8s_attach_gnb_to_core(
         validate_container_name(pod_name, "gnb")
         v1 = get_k8s_client(kubeconfig=kubeconfig)
 
-        exec_in_pod(v1, pod_name, namespace,
-                    ["sed", "-i", f"s/- address: .*/- address: {amf_address}/", GNB_CFG])
-        exec_in_pod(v1, pod_name, namespace,
-                    ["sh", "-c",
-                     "nohup /usr/local/bin/nr-gnb -c /etc/ueransim/open5gs-gnb.yaml"
-                     " > /proc/1/fd/1 2>&1 &"])
+        def set_amf(cfg: dict) -> None:
+            cfg["amfConfigs"][0]["address"] = amf_address
 
+        if not _edit_pod_config(v1, pod_name, namespace, GNB_CFG, set_amf):
+            return GnbOperationResponse(
+                status="error", container=pod_name,
+                message=f"Pod {pod_name} did not reach Running state after the restart",
+            )
         time.sleep(2)
-        status_out, _ = exec_in_pod(
-            v1, pod_name, namespace,
-            ["sh", "-c", "pgrep -f nr-gnb && echo 'gNB process is running'"
-                         " || echo 'gNB process not found'"],
-        )
-        running = "process is running" in status_out
+        running, status_out = _process_running(v1, pod_name, namespace, "nr-gnb")
 
         return GnbOperationResponse(
             status="success" if running else "warning",
             message=(f"Pod {pod_name} connected to core with AMF {amf_address}. "
-                     f"{'nr-gnb started.' if running else 'nr-gnb may not be running.'}"),
+                     f"{'nr-gnb restarted.' if running else 'nr-gnb is not running.'}"),
             container=pod_name, logs=status_out,
         )
     except ValueError as e:
@@ -436,7 +492,17 @@ def k8s_create_ue(
         else:
             pod_name = f"ue-{generate_random_suffix()}"
 
+        cfg = build_ue_config(
+            gnb_search_list=gnb_search_list, supi=supi, mcc=mcc, mnc=mnc,
+            key=key, op=op, op_type=op_type,
+            slice_sst=slice_sst, slice_sd=slice_sd,
+            session_apn=session_apn, session_type=session_type,
+            tun_netmask=tun_netmask,
+        )
         v1 = get_k8s_client(kubeconfig=kubeconfig)
+        v1.create_namespaced_config_map(
+            namespace, _config_map(f"{pod_name}-config", namespace, "open5gs-ue.yaml", cfg)
+        )
         pod_body = client.V1Pod(
             metadata=client.V1ObjectMeta(
                 name=pod_name, namespace=namespace,
@@ -447,21 +513,28 @@ def k8s_create_ue(
                 image_pull_secrets=[client.V1LocalObjectReference(name=image_pull_secret)],
                 containers=[client.V1Container(
                     name="ue", image=ue_image, image_pull_policy="IfNotPresent",
-                    command=["tail", "-f", "/dev/null"],
+                    command=ue_pod_command(),
                     security_context=client.V1SecurityContext(
                         privileged=True,
                         capabilities=client.V1Capabilities(add=["NET_ADMIN"]),
                     ),
-                    volume_mounts=[client.V1VolumeMount(
-                        name="tun-device", mount_path="/dev/net/tun"
-                    )],
+                    volume_mounts=[
+                        client.V1VolumeMount(name="tun-device", mount_path="/dev/net/tun"),
+                        _config_mount(UE_CFG),
+                    ],
                 )],
-                volumes=[client.V1Volume(
-                    name="tun-device",
-                    host_path=client.V1HostPathVolumeSource(
-                        path="/dev/net/tun", type="CharDevice"
+                volumes=[
+                    client.V1Volume(
+                        name="tun-device",
+                        host_path=client.V1HostPathVolumeSource(
+                            path="/dev/net/tun", type="CharDevice"
+                        ),
                     ),
-                )],
+                    client.V1Volume(
+                        name="config",
+                        config_map=client.V1ConfigMapVolumeSource(name=f"{pod_name}-config"),
+                    ),
+                ],
             ),
         )
         v1.create_namespaced_pod(namespace=namespace, body=pod_body)
@@ -472,20 +545,6 @@ def k8s_create_ue(
                 configuration=_empty_cfg(gnb_search_list),
                 message=f"Pod {pod_name} did not reach Running state within 60s",
             )
-
-        # Update gnbSearchList
-        exec_in_pod(v1, pod_name, namespace,
-                    ["sh", "-c",
-                     f"sed -i '/^gnbSearchList:/{{n; s/  - .*/  - {gnb_search_list}/;}}' {UE_CFG}"])
-
-        # Apply additional parametric config
-        for cmd in ue_config_cmds(
-            supi=supi, mcc=mcc, mnc=mnc, key=key, op=op, op_type=op_type,
-            slice_sst=slice_sst, slice_sd=slice_sd,
-            session_apn=session_apn, session_type=session_type,
-            tun_netmask=tun_netmask,
-        ):
-            exec_in_pod(v1, pod_name, namespace, cmd)
 
         return UeCreateResponse(
             status="success", container_id=pod_name, container_name=pod_name,
@@ -560,8 +619,10 @@ def k8s_delete_ue(pod_name: str, namespace: str = "ueransim", kubeconfig: str = 
             )
         validate_container_name(pod_name, "ue")
         v1 = get_k8s_client(kubeconfig=kubeconfig)
+        pod = v1.read_namespaced_pod(pod_name, namespace)
         v1.delete_namespaced_pod(pod_name, namespace,
                                  body=client.V1DeleteOptions(grace_period_seconds=0))
+        _delete_managed_config_map(v1, pod, UE_CFG)
         return UeOperationResponse(
             status="success", message=f"Pod {pod_name} deleted from namespace {namespace}",
             container=pod_name,
@@ -613,7 +674,7 @@ def k8s_get_ue_logs(
 def k8s_attach_ue_to_gnb(
     ue_pod_name: str, gnb_pod_name: str, namespace: str = "ueransim", kubeconfig: str = "",
 ) -> UeOperationResponse:
-    """Update the UE's gnbSearchList with the gNB pod IP and start nr-ue.
+    """Point a UE pod at a gNB pod's IP: update its ConfigMap and recreate the pod.
 
     Args:
         ue_pod_name: UE pod name
@@ -636,27 +697,18 @@ def k8s_attach_ue_to_gnb(
             )
         gnb_ip = gnb_ip_result.logs.strip()
 
-        exec_in_pod(v1, ue_pod_name, namespace,
-                    ["sh", "-c",
-                     f"sed -i '/^gnbSearchList:/{{n; s/  - .*/  - {gnb_ip}/;}}' {UE_CFG}"])
-        exec_in_pod(v1, ue_pod_name, namespace,
-                    ["sh", "-c",
-                     "nohup /usr/local/bin/nr-ue -c /etc/ueransim/open5gs-ue.yaml"
-                     " > /proc/1/fd/1 2>&1 &"])
+        def set_gnb(cfg: dict) -> None:
+            cfg["gnbSearchList"] = [gnb_ip]
 
+        if not _edit_pod_config(v1, ue_pod_name, namespace, UE_CFG, set_gnb):
+            return UeOperationResponse(
+                status="error", container=ue_pod_name,
+                message=f"Pod {ue_pod_name} did not reach Running state after the restart",
+            )
         time.sleep(3)
 
-        gnb_out, _ = exec_in_pod(v1, gnb_pod_name, namespace,
-                                  ["sh", "-c",
-                                   "pgrep -f nr-gnb && echo 'gNB process is running'"
-                                   " || echo 'gNB process not found'"])
-        ue_out, _ = exec_in_pod(v1, ue_pod_name, namespace,
-                                 ["sh", "-c",
-                                  "pgrep -f nr-ue && echo 'UE process is running'"
-                                  " || echo 'UE process not found'"])
-
-        gnb_ok = "process is running" in gnb_out
-        ue_ok  = "process is running" in ue_out
+        gnb_ok, gnb_out = _process_running(v1, gnb_pod_name, namespace, "nr-gnb")
+        ue_ok, ue_out = _process_running(v1, ue_pod_name, namespace, "nr-ue")
         details = [
             "gNB: nr-gnb active" if gnb_ok else "gNB: nr-gnb not running",
             "UE: nr-ue active"   if ue_ok  else "UE: nr-ue not running",
@@ -689,7 +741,7 @@ def k8s_edit_pod_config(
     namespace: str = "ueransim",
     kubeconfig: str = "",
 ) -> UeOperationResponse:
-    """Edit a configuration field inside an existing pod.
+    """Edit one configuration field of a gNB/UE pod: update its ConfigMap and recreate the pod.
 
     Args:
         pod_name: Pod name (gnb-* or ue-*)
@@ -705,11 +757,10 @@ def k8s_edit_pod_config(
     from kubernetes.client.rest import ApiException
     try:
         v1 = get_k8s_client(kubeconfig=kubeconfig)
-        v1.read_namespaced_pod(pod_name, namespace)  # verify pod exists
-
         ctype = _pod_type(pod_name)
-        cmds = _k8s_edit_commands(config_type, config_value, ctype)
-        if cmds is None:
+        # Dry-run on the template to reject an unsupported field before touching the pod.
+        if ctype == "unknown" or not apply_config_edit(load_template(ctype), ctype,
+                                                       config_type, config_value):
             return UeOperationResponse(
                 status="error",
                 message=(f"Unsupported config_type '{config_type}' for pod type '{ctype}'."
@@ -717,12 +768,15 @@ def k8s_edit_pod_config(
                 container=pod_name,
             )
 
-        for cmd in cmds:
-            exec_in_pod(v1, pod_name, namespace, cmd)
-
+        cfg_path = GNB_CFG if ctype == "gnb" else UE_CFG
+        running = _edit_pod_config(
+            v1, pod_name, namespace, cfg_path,
+            lambda cfg: apply_config_edit(cfg, ctype, config_type, config_value),
+        )
         return UeOperationResponse(
-            status="success",
-            message=f"Pod {pod_name} updated: {config_type}={config_value}",
+            status="success" if running else "error",
+            message=(f"Pod {pod_name} updated: {config_type}={config_value}"
+                     if running else f"Pod {pod_name} did not reach Running state after the restart"),
             container=pod_name,
         )
 
@@ -737,57 +791,3 @@ def k8s_edit_pod_config(
     except Exception as e:
         return UeOperationResponse(status="error", message=str(e), container=pod_name)
 
-
-def _k8s_edit_commands(config_type: str, config_value: str, ctype: str):
-    """Mirror of docker_tools._edit_commands for K8s (pod names always known)."""
-    f_gnb, f_ue = GNB_CFG, UE_CFG
-
-    if config_type == "slice":
-        parts = config_value.split(",")
-        sst = int(parts[0])
-        sd = int(parts[1]) if len(parts) > 1 else None
-        if ctype == "gnb":
-            return gnb_slice_cmds(sst, sd)
-        if ctype == "ue":
-            return ue_slice_cmds(sst, sd)
-        return None
-
-    if config_type in ("mcc", "mnc"):
-        target = f_gnb if ctype == "gnb" else f_ue if ctype == "ue" else None
-        if target is None:
-            return None
-        return [["sed", "-i", f"s/^{config_type}: .*/{config_type}: '{config_value}'/", target]]
-
-    _gnb_map = {
-        "ngap_ip":          [["sed", "-i", f"s/ngapIp: .*/ngapIp: {config_value}/", f_gnb]],
-        "gtp_ip":           [["sed", "-i", f"s/gtpIp: .*/gtpIp: {config_value}/", f_gnb]],
-        "amf_ip":           [["sed", "-i", f"s/- address: .*/- address: {config_value}/", f_gnb]],
-        "tac":              [["sed", "-i", f"s/^tac: .*/tac: {config_value}/", f_gnb]],
-        "nci":              [["sed", "-i", f"s/^nci: .*/nci: '{config_value}'/", f_gnb]],
-        "id_length":        [["sed", "-i", f"s/^idLength: .*/idLength: {config_value}/", f_gnb]],
-        "cell_access_type": [["sed", "-i",
-                               f"s/^cellAccessType: .*/cellAccessType: {config_value}/", f_gnb]],
-        "ignore_stream_ids":[["sed", "-i",
-                               f"s/^ignoreStreamIds: .*/ignoreStreamIds: {config_value}/", f_gnb]],
-        "gtp_advertise_ip": gnb_gtp_advertise_cmds(config_value),
-    }
-    _ue_map = {
-        "gnb_search_list":  [["sh", "-c",
-                               f"sed -i '/^gnbSearchList:/{{n; s/  - .*/  - {config_value}/;}}' {f_ue}"]],
-        "supi":             [["sed", "-i", f"s/^supi: .*/supi: '{config_value}'/", f_ue]],
-        "key":              [["sed", "-i", f"s/^key: .*/key: '{config_value}'/", f_ue]],
-        "op":               [["sed", "-i", f"s/^op: .*/op: '{config_value}'/", f_ue]],
-        "op_type":          [["sed", "-i", f"s/^opType: .*/opType: '{config_value}'/", f_ue]],
-        "session_apn":      [["sed", "-i",
-                               f"s/^    apn: .*/    apn: '{config_value}'/", f_ue]],
-        "session_type":     [["sed", "-i",
-                               f"s/^  - type: .*/  - type: '{config_value}'/", f_ue]],
-        "tun_netmask":      [["sed", "-i",
-                               f"s/^tunNetmask: .*/tunNetmask: '{config_value}'/", f_ue]],
-    }
-
-    if config_type in _gnb_map:
-        return _gnb_map[config_type]
-    if config_type in _ue_map:
-        return _ue_map[config_type]
-    return None

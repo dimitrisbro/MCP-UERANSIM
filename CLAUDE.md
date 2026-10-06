@@ -42,6 +42,15 @@ nerdctl build -f docker/ue_ubuntu.Dockerfile  -t ghcr.io/dimitrisbro/mcp-ueransi
 
 Images are stored in GHCR under `ghcr.io/dimitrisbro/mcp-ueransim/`.
 
+## Tests
+
+```bash
+uv run --no-project --with pytest --with kubernetes==36.0.2 --with mcp==1.27.2 python -m pytest tests -q
+```
+
+`tests/test_k8s_tools.py` covers the K8s pod commands, ConfigMap building/edits and the
+create/attach/edit/delete tools against a mocked Kubernetes API.
+
 ## Kubernetes cluster
 
 - Default cluster: single-node at `192.168.188.210:6443` (node: `coppilot-server`)
@@ -52,8 +61,9 @@ Images are stored in GHCR under `ghcr.io/dimitrisbro/mcp-ueransim/`.
 
 ## Key design decisions
 
-- **No auto-start**: containers/pods run `tail -f /dev/null` and UERANSIM binaries are started manually by the MCP tools (`attach_gnb_to_core`, `attach_ue_to_gnb`).
-- **Config via sed/awk**: scalar fields updated with `sed -i`, YAML block sections (slices) replaced with POSIX awk. Logic lives in `config_ops.py` and is reused by both Docker and K8s tools.
+- **Docker: no auto-start**: containers run `tail -f /dev/null` and UERANSIM binaries are started by the MCP tools (`attach_gnb_to_core`, `attach_ue_to_gnb`).
+- **K8s: ConfigMap + recreate**: pods run `nr-gnb`/`nr-ue` as PID 1 from a read-only ConfigMap mount (`<pod>-config`, same shape as networkAssistant's `infra/` manifests). Attach/edit tools edit the YAML in that ConfigMap (`config_ops.apply_config_edit`) and recreate the pod (`k8s_utils.recreate_pod`); they never exec `sed` into K8s pods. Templates come from `config/` (copied into the MCP image).
+- **Config via sed/awk (Docker)**: scalar fields updated with `sed -i`, YAML block sections (slices) replaced with POSIX awk. Logic lives in `config_ops.py` and is reused by both Docker and K8s tools.
 - **busybox awk compatibility**: awk patterns in `config_ops.py` and entrypoint scripts are written to work on both busybox (Alpine) and mawk/gawk (Ubuntu).
 - **Container name detection**: `_detect_type()` in `docker_tools.py` infers gnb/ue from the container name prefix. Same logic applies in `k8s_tools.py`.
 - **Tool registration**: importing `docker_tools` and `k8s_tools` in `server.py` triggers `@mcp.tool()` decorators as side-effects. Never move the `FastMCP` instance out of `app.py`.

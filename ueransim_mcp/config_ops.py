@@ -12,7 +12,10 @@ Multi-line edits use sh -c "awk ... FILE > FILE.tmp && mv FILE.tmp FILE"
 so in-place rewrite is portable across all platforms.
 """
 
+from pathlib import Path
 from typing import List, Optional
+
+import yaml
 
 GNB_CFG = "/etc/ueransim/open5gs-gnb.yaml"
 UE_CFG  = "/etc/ueransim/open5gs-ue.yaml"
@@ -165,3 +168,151 @@ def gnb_gtp_advertise_cmds(gtp_advertise_ip: str) -> List[List[str]]:
         f"{f} > {f}.tmp && mv {f}.tmp {f}"
     )
     return [["sh", "-c", script]]
+
+
+# ── Kubernetes: config as a ConfigMap, edited as YAML ─────────────────────────
+#
+# K8s pods mount their config read-only from a ConfigMap (subPath), so the sed/awk
+# commands above can't edit it in place. The K8s tools build and edit the config
+# as a dict instead, store it in the pod's ConfigMap, and recreate the pod.
+
+POD_IP_PLACEHOLDER = "__POD_IP__"
+
+_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
+
+
+def load_template(kind: str) -> dict:
+    """Return the default config for 'gnb' or 'ue' from config/open5gs-<kind>.yaml."""
+    return yaml.safe_load((_CONFIG_DIR / f"open5gs-{kind}.yaml").read_text())
+
+
+def dump_config(cfg: dict) -> str:
+    return yaml.safe_dump(cfg, sort_keys=False)
+
+
+def gnb_pod_command(cfg_path: str = GNB_CFG) -> List[str]:
+    """nr-gnb as PID 1, with __POD_IP__ in the config replaced by the pod's IP.
+
+    Same shape as the networkAssistant infra/ gNB manifests.
+    """
+    return [
+        "sh", "-c",
+        f"sed \"s/{POD_IP_PLACEHOLDER}/$(hostname -i)/g\" {cfg_path} > /tmp/gnb.yaml"
+        " && exec /usr/local/bin/nr-gnb -c /tmp/gnb.yaml",
+    ]
+
+
+def ue_pod_command(cfg_path: str = UE_CFG) -> List[str]:
+    return ["/usr/local/bin/nr-ue", "-c", cfg_path]
+
+
+def _slices(sst: int, sd: Optional[int]) -> List[dict]:
+    return [{"sst": sst, "sd": sd} if sd is not None else {"sst": sst}]
+
+
+def build_gnb_config(
+    amf_address: str,
+    amf_port: str,
+    mcc: str,
+    mnc: str,
+    tac: int,
+    nci: str,
+    id_length: int,
+    slice_sst: int,
+    slice_sd: Optional[int],
+    cell_access_type: str,
+    gtp_advertise_ip: Optional[str],
+    ignore_stream_ids: bool,
+) -> dict:
+    cfg = load_template("gnb")
+    cfg.update(
+        mcc=mcc, mnc=mnc, nci=nci, idLength=id_length, tac=tac,
+        linkIp=POD_IP_PLACEHOLDER, ngapIp=POD_IP_PLACEHOLDER, gtpIp=POD_IP_PLACEHOLDER,
+        amfConfigs=[{"address": amf_address, "port": int(amf_port)}],
+        slices=_slices(slice_sst, slice_sd),
+        ignoreStreamIds=ignore_stream_ids, cellAccessType=cell_access_type,
+    )
+    if gtp_advertise_ip is not None:
+        cfg["gtpAdvertiseIp"] = gtp_advertise_ip
+    return cfg
+
+
+def build_ue_config(
+    gnb_search_list: str,
+    supi: Optional[str],
+    mcc: str,
+    mnc: str,
+    key: Optional[str],
+    op: Optional[str],
+    op_type: str,
+    slice_sst: int,
+    slice_sd: Optional[int],
+    session_apn: str,
+    session_type: str,
+    tun_netmask: str,
+) -> dict:
+    cfg = load_template("ue")
+    cfg.update(mcc=mcc, mnc=mnc, opType=op_type, tunNetmask=tun_netmask,
+               gnbSearchList=[gnb_search_list])
+    for field, value in (("supi", supi), ("key", key), ("op", op)):
+        if value is not None:
+            cfg[field] = value
+    cfg["sessions"][0].update(type=session_type, apn=session_apn)
+    _set_ue_slice(cfg, slice_sst, slice_sd)
+    return cfg
+
+
+def _set_ue_slice(cfg: dict, sst: int, sd: Optional[int]) -> None:
+    for session in cfg["sessions"]:
+        session["slice"] = _slices(sst, sd)[0]
+    cfg["configured-nssai"] = _slices(sst, sd)
+    cfg["default-nssai"] = _slices(sst, sd)
+
+
+# config_type -> (YAML key, value parser) for single-field edits.
+_GNB_FIELDS = {
+    "ngap_ip": ("ngapIp", str), "gtp_ip": ("gtpIp", str),
+    "mcc": ("mcc", str), "mnc": ("mnc", str), "tac": ("tac", int), "nci": ("nci", str),
+    "id_length": ("idLength", int), "cell_access_type": ("cellAccessType", str),
+    "ignore_stream_ids": ("ignoreStreamIds", lambda v: v.lower() == "true"),
+    "gtp_advertise_ip": ("gtpAdvertiseIp", str),
+}
+_UE_FIELDS = {
+    "supi": ("supi", str), "key": ("key", str), "op": ("op", str),
+    "op_type": ("opType", str), "mcc": ("mcc", str), "mnc": ("mnc", str),
+    "tun_netmask": ("tunNetmask", str),
+}
+
+
+def apply_config_edit(cfg: dict, ctype: str, config_type: str, config_value: str) -> bool:
+    """Apply one k8s_edit_pod_config edit to cfg in place. False if unsupported."""
+    if config_type == "slice":
+        parts = config_value.split(",")
+        sst, sd = int(parts[0]), int(parts[1]) if len(parts) > 1 else None
+        if ctype == "gnb":
+            cfg["slices"] = _slices(sst, sd)
+        elif ctype == "ue":
+            _set_ue_slice(cfg, sst, sd)
+        else:
+            return False
+        return True
+    if ctype == "gnb":
+        if config_type == "amf_ip":
+            cfg["amfConfigs"][0]["address"] = config_value
+            return True
+        fields = _GNB_FIELDS
+    elif ctype == "ue":
+        if config_type == "gnb_search_list":
+            cfg["gnbSearchList"] = [config_value]
+            return True
+        if config_type in ("session_apn", "session_type"):
+            cfg["sessions"][0][config_type.removeprefix("session_")] = config_value
+            return True
+        fields = _UE_FIELDS
+    else:
+        return False
+    if config_type not in fields:
+        return False
+    yaml_key, parse = fields[config_type]
+    cfg[yaml_key] = parse(config_value)
+    return True
