@@ -13,7 +13,7 @@ from .validators import (
     validate_op_type, validate_session_type, validate_supi, validate_hex_key,
 )
 from .k8s_utils import (
-    MANAGED_BY, get_k8s_client, exec_in_pod, pod_config_map, recreate_pod,
+    MANAGED_BY, get_k8s_client, exec_in_pod, pod_config_map, read_pod_log, recreate_pod,
     wait_for_pod_running,
 )
 from .config_ops import (
@@ -317,7 +317,7 @@ def k8s_get_gnb_logs(
     try:
         validate_container_name(pod_name, "gnb")
         v1 = get_k8s_client(kubeconfig=kubeconfig)
-        logs = v1.read_namespaced_pod_log(pod_name, namespace, tail_lines=lines)
+        logs = read_pod_log(v1, pod_name, namespace, lines)
         return GnbOperationResponse(status="success", message="Logs retrieved successfully",
                                     container=pod_name, logs=logs)
     except ValueError as e:
@@ -655,7 +655,7 @@ def k8s_get_ue_logs(
     try:
         validate_container_name(pod_name, "ue")
         v1 = get_k8s_client(kubeconfig=kubeconfig)
-        logs = v1.read_namespaced_pod_log(pod_name, namespace, tail_lines=lines)
+        logs = read_pod_log(v1, pod_name, namespace, lines)
         return UeOperationResponse(status="success", message="Logs retrieved successfully",
                                    container=pod_name, logs=logs)
     except ValueError as e:

@@ -215,3 +215,12 @@ def test_delete_gnb_removes_only_config_maps_the_tools_created(v1, labels, delet
 def test_pod_config_map_finds_the_subpath_mount() -> None:
     assert pod_config_map(_pod("gnb-1a", GNB_CFG, "gnb-1a-config"), GNB_CFG) == (
         "gnb-1a-config", "open5gs-gnb.yaml")
+
+
+def test_get_gnb_logs_returns_decoded_text(v1) -> None:
+    v1.read_namespaced_pod_log.return_value = SimpleNamespace(data=b"NG Setup ok\n")
+
+    result = k8s_tools.k8s_get_gnb_logs("gnb-1a", lines=5, namespace="net-demo")
+
+    assert result.logs == "NG Setup ok\n"
+    assert v1.read_namespaced_pod_log.call_args.kwargs["_preload_content"] is False

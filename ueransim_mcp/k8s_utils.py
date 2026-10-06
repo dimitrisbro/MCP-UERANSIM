@@ -110,3 +110,15 @@ def recreate_pod(v1, pod, timeout: int = 60) -> bool:
         raise TimeoutError(f"Pod {name} was not deleted within {timeout}s")
     v1.create_namespaced_pod(namespace=namespace, body=body)
     return wait_for_pod_running(v1, name, namespace, timeout)
+
+
+def read_pod_log(v1, pod_name: str, namespace: str, lines: int) -> str:
+    """Return the pod's last log lines as text.
+
+    The kubernetes client (36.x) returns str(bytes), i.e. "b'...'", for preloaded
+    log content, so read the raw response and decode it.
+    """
+    resp = v1.read_namespaced_pod_log(
+        pod_name, namespace, tail_lines=lines, _preload_content=False
+    )
+    return resp.data.decode("utf-8", errors="replace")
