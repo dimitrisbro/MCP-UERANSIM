@@ -10,5 +10,11 @@ dependencies = ["mcp==1.30.0", "kubernetes==36.0.3"]
 [project.scripts]
 ueransim-mcp = "ueransim_mcp.server:start_server"
 
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.setuptools]
 packages = ["ueransim_mcp"]

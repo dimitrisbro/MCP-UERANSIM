@@ -50,6 +50,9 @@ Images are stored in GHCR under `ghcr.io/dimitrisbro/mcp-ueransim/`.
 uv run --no-project --with pytest --with kubernetes==36.0.3 --with mcp==1.30.0 python -m pytest tests -q
 ```
 
+`tests/test_validators.py`, `tests/test_config_ops.py` (Docker sed/awk builders, run against a copy of
+the config templates, and the K8s dict builders) and `tests/test_k8s_helpers.py` need no cluster or Docker.
+
 `tests/test_k8s_tools.py` covers the K8s pod commands, ConfigMap building/edits and the
 create/attach/edit/delete tools against a mocked Kubernetes API.
 
@@ -201,7 +204,7 @@ Sub-issues must **never** themselves decompose further.
 - Never change `app.py` or `server.py` unless the issue targets them
 
 ### Step 5 — Run the tests
-This repo has no test suite yet. Skip this step and note "No tests defined" in the PR body.
+Run the suite from the Tests section above and paste the result in the PR body.
 
 Verify tool registration still works:
 ```bash
@@ -251,7 +254,7 @@ Closes #<N>
 <file>: <what changed>
 
 ## Test results
-No tests defined for this repo.
+<paste pytest output>
 
 ## Notes for reviewer
 <anything non-obvious>
