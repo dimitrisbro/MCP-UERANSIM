@@ -153,13 +153,15 @@ The `-i` flag is mandatory — it keeps stdin open for stdio transport.
 
 ## Autonomous Overnight Work
 
-When Claude Code is launched by `run_overnight.sh` you are already inside a git worktree
-for a single GitHub issue. No human is watching. Follow these steps exactly.
+When Claude Code is launched by the nightly cloud routine you are working on a single
+GitHub issue. No human is watching. Follow these steps exactly; where the routine's prompt
+gives a cloud-specific difference (branching, `gh api` instead of `gh issue`/`gh pr`), the
+prompt wins.
 
 ### Context when you start
-- Working directory: a git worktree at `MCP-UERANSIM/.worktrees/issue-<N>`
-- Branch pre-created: `claude-overnight/issue-<N>`
-- Issue number `<N>` was passed in your initial prompt
+- Working directory: a fresh clone of `MCP-UERANSIM`, side by side with the other three repos
+- Branch: `claude-overnight/issue-<N>`, created from the latest `main` (no git worktree)
+- Issue number `<N>` comes from the routine's list of open `claude-overnight` issues
 
 ### Step 1 — Read the issue
 ```bash
