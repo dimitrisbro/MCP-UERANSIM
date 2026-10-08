@@ -1,5 +1,5 @@
 # Alpine Linux base
-FROM alpine:3.16 AS builder
+FROM alpine:3.16.9 AS builder
 
 # Install required dependencies
 RUN apk add --no-cache \
@@ -19,7 +19,7 @@ WORKDIR /opt/UERANSIM
 RUN make
 
 # Final image
-FROM alpine:3.16
+FROM alpine:3.16.9
 
 # Install required runtime libraries
 RUN apk add --no-cache \

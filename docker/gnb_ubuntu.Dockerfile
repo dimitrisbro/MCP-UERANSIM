@@ -1,5 +1,5 @@
 # Multi-stage build with minimal Ubuntu
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:jammy-20260924.1 AS builder
 
 # Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
@@ -27,7 +27,7 @@ WORKDIR /opt/UERANSIM
 RUN make
 
 # Minimal runtime image with distroless-style approach
-FROM ubuntu:22.04
+FROM ubuntu:jammy-20260924.1
 
 # Install only runtime dependencies
 # procps: provides pgrep (used by MCP server for process status checks)
