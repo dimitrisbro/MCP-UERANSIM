@@ -37,8 +37,15 @@ def _sed_exprs(cmds):
     return [c[2] for c in cmds if c[0] == "sed"]
 
 
+# The commands run inside the Linux UERANSIM container (GNU sed). BSD sed (macOS) rejects
+# `sed -i <file>`, so executing them on such a host would test the host, not the contract.
+GNU_SED = subprocess.run(["sed", "--version"], capture_output=True).returncode == 0
+
+
 def _run(cmds, kind, tmp_path):
     """Execute commands against a temp copy of the template and return the parsed YAML."""
+    if not GNU_SED:
+        pytest.skip("needs GNU sed, as in the UERANSIM container")
     real = GNB_CFG if kind == "gnb" else UE_CFG
     target = tmp_path / f"open5gs-{kind}.yaml"
     shutil.copy(CONFIG_DIR / f"open5gs-{kind}.yaml", target)
