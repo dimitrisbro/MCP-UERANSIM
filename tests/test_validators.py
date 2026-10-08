@@ -15,7 +15,7 @@ def test_validate_ip_valid(ip):
 
 
 @pytest.mark.parametrize("ip", ["", "1.2.3", "1.2.3.4.5", "256.1.1.1", "1.1.1.300", "a.b.c.d",
-                                "1.2.3.-4", "1.2.3.4 ", "::1", "1234.1.1.1"])
+                                "1.2.3.-4", "1.2.3.4 ", "::1", "1234.1.1.1", "1.2.3.4\n"])
 def test_validate_ip_invalid(ip):
     with pytest.raises(ValueError):
         validate_ip(ip)
@@ -26,7 +26,7 @@ def test_validate_container_id_valid(cid):
     assert validate_container_id(cid) is True
 
 
-@pytest.mark.parametrize("cid", ["", "xyz", "abc-123", "abc 123", "gnb-1"])
+@pytest.mark.parametrize("cid", ["", "xyz", "abc-123", "abc 123", "gnb-1", "abc\n"])
 def test_validate_container_id_invalid(cid):
     with pytest.raises(ValueError):
         validate_container_id(cid)
@@ -37,7 +37,7 @@ def test_validate_mcc_valid(mcc):
     assert validate_mcc(mcc) is True
 
 
-@pytest.mark.parametrize("mcc", ["", "99", "9999", "abc", "9 9", "-99"])
+@pytest.mark.parametrize("mcc", ["", "99", "9999", "abc", "9 9", "-99", "001\n"])
 def test_validate_mcc_invalid(mcc):
     with pytest.raises(ValueError):
         validate_mcc(mcc)
@@ -48,7 +48,7 @@ def test_validate_mnc_valid(mnc):
     assert validate_mnc(mnc) is True
 
 
-@pytest.mark.parametrize("mnc", ["", "1", "1234", "ab", "7 ", "-1"])
+@pytest.mark.parametrize("mnc", ["", "1", "1234", "ab", "7 ", "-1", "01\n"])
 def test_validate_mnc_invalid(mnc):
     with pytest.raises(ValueError):
         validate_mnc(mnc)
@@ -105,14 +105,12 @@ def test_validate_supi_valid(supi):
 
 @pytest.mark.parametrize("supi", ["", "999700000000001", "imsi-99970000000001",
                                   "imsi-9997000000000011", "imsi-99970000000000a",
-                                  "IMSI-999700000000001"])
+                                  "IMSI-999700000000001", "imsi-999700000000001\n"])
 def test_validate_supi_invalid(supi):
     with pytest.raises(ValueError):
         validate_supi(supi)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "bug: regex uses '$' without fullmatch, so a trailing newline is accepted"))
 def test_validate_supi_rejects_trailing_newline():
     with pytest.raises(ValueError):
         validate_supi("imsi-999700000000001\n")
@@ -123,7 +121,7 @@ def test_validate_hex_key_valid(key):
     assert validate_hex_key(key) is True
 
 
-@pytest.mark.parametrize("key", ["", "0" * 31, "0" * 33, "g" * 32, "0x" + "0" * 30])
+@pytest.mark.parametrize("key", ["", "0" * 31, "0" * 33, "g" * 32, "0x" + "0" * 30, "0" * 32 + "\n"])
 def test_validate_hex_key_invalid(key):
     with pytest.raises(ValueError):
         validate_hex_key(key)
@@ -139,7 +137,7 @@ def test_validate_container_name_valid_without_prefix(name):
     assert validate_container_name(name) is True
 
 
-@pytest.mark.parametrize("name", ["", "has space", "dot.name", "slash/name", "semi;colon"])
+@pytest.mark.parametrize("name", ["", "has space", "dot.name", "slash/name", "semi;colon", "gnb-1\n"])
 def test_validate_container_name_invalid(name):
     with pytest.raises(ValueError):
         validate_container_name(name)

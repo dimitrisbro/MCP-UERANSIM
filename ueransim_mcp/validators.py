@@ -8,7 +8,7 @@ _VALID_SESSION_TYPES      = {"IPv4", "IPv6", "IPv4v6"}
 
 def validate_ip(ip: str) -> bool:
     """Validate IPv4 address format and octet range. Raises ValueError on failure."""
-    match = re.match(r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$', ip)
+    match = re.fullmatch(r'(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})', ip)
     if not match:
         raise ValueError(f"Invalid IP format: {ip}. Must be x.x.x.x with numbers only.")
     for octet in match.groups():
@@ -19,21 +19,21 @@ def validate_ip(ip: str) -> bool:
 
 def validate_container_id(container_id: str) -> bool:
     """Validate that a string is a hexadecimal Docker container ID. Raises ValueError on failure."""
-    if not re.match(r'^[0-9a-fA-F]+$', container_id):
+    if not re.fullmatch(r'[0-9a-fA-F]+', container_id):
         raise ValueError(f"Invalid container ID: {container_id}. Must be a hexadecimal string.")
     return True
 
 
 def validate_mcc(mcc: str) -> bool:
     """Validate MCC: exactly 3 decimal digits."""
-    if not re.match(r'^\d{3}$', mcc):
+    if not re.fullmatch(r'\d{3}', mcc):
         raise ValueError(f"Invalid MCC: {mcc}. Must be exactly 3 decimal digits.")
     return True
 
 
 def validate_mnc(mnc: str) -> bool:
     """Validate MNC: 2 or 3 decimal digits."""
-    if not re.match(r'^\d{2,3}$', mnc):
+    if not re.fullmatch(r'\d{2,3}', mnc):
         raise ValueError(f"Invalid MNC: {mnc}. Must be 2 or 3 decimal digits.")
     return True
 
@@ -76,7 +76,7 @@ def validate_session_type(session_type: str) -> bool:
 
 def validate_supi(supi: str) -> bool:
     """Validate SUPI: imsi- followed by exactly 15 digits."""
-    if not re.match(r'^imsi-\d{15}$', supi):
+    if not re.fullmatch(r'imsi-\d{15}', supi):
         raise ValueError(
             f"Invalid SUPI: '{supi}'. Must be 'imsi-' followed by exactly 15 digits."
         )
@@ -85,7 +85,7 @@ def validate_supi(supi: str) -> bool:
 
 def validate_hex_key(value: str, name: str = "key") -> bool:
     """Validate a 128-bit key expressed as 32 hexadecimal characters."""
-    if not re.match(r'^[0-9a-fA-F]{32}$', value):
+    if not re.fullmatch(r'[0-9a-fA-F]{32}', value):
         raise ValueError(
             f"Invalid {name}: '{value}'. Must be exactly 32 hexadecimal characters."
         )
@@ -104,7 +104,7 @@ def validate_container_name(name: str, prefix: Optional[str] = None) -> bool:
     """
     if not name:
         raise ValueError("Container name cannot be empty.")
-    if not re.match(r'^[a-zA-Z0-9_-]+$', name):
+    if not re.fullmatch(r'[a-zA-Z0-9_-]+', name):
         raise ValueError(
             f"Invalid container name: {name}. Use only letters, numbers, underscores and hyphens."
         )
