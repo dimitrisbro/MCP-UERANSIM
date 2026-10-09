@@ -29,7 +29,7 @@ _UE_IMAGE  = "ghcr.io/dimitrisbro/mcp-ueransim/ueransim-ue:3.3.0"
 
 
 def _is_container_id(value: str) -> bool:
-    return bool(re.match(r'^[0-9a-fA-F]+$', value)) and len(value) in (12, 64)
+    return bool(re.fullmatch(r'[0-9a-fA-F]+', value)) and len(value) in (12, 64)
 
 
 def _exec(runtime: str, container_id: str, cmd: list,

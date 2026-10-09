@@ -64,11 +64,11 @@ def get_container_name(container_id_or_name: str) -> str:
 def validate_existing_container(container_id_or_name: str) -> bool:
     """Check that a container exists in Docker. Raises ValueError if not found."""
     try:
-        if (re.match(r'^[0-9a-fA-F]+$', container_id_or_name)
+        if (re.fullmatch(r'[0-9a-fA-F]+', container_id_or_name)
                 and len(container_id_or_name) in (12, 64)):
             validate_container_id(container_id_or_name)
         else:
-            if not re.match(r'^[a-zA-Z0-9_-]+$', container_id_or_name):
+            if not re.fullmatch(r'[a-zA-Z0-9_-]+', container_id_or_name):
                 raise ValueError(f"Invalid container name format: {container_id_or_name}")
 
         runtime = get_container_runtime()
