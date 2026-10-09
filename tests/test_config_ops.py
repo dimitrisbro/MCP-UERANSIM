@@ -138,9 +138,6 @@ def test_gnb_gtp_advertise_inserts_after_gtp_ip(tmp_path):
     assert keys.index("gtpAdvertiseIp") == keys.index("gtpIp") + 1
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "bug: awk sees gtpIp before the existing gtpAdvertiseIp, so it inserts a new line "
-    "and then also rewrites the old one, leaving a duplicate key"))
 def test_gnb_gtp_advertise_replaces_existing(tmp_path):
     first = gnb_gtp_advertise_cmds("1.1.1.1")
     second = gnb_gtp_advertise_cmds("2.2.2.2")

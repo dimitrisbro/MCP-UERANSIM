@@ -159,13 +159,12 @@ def ue_slice_cmds(slice_sst: int, slice_sd: Optional[int]) -> List[List[str]]:
 def gnb_gtp_advertise_cmds(gtp_advertise_ip: str) -> List[List[str]]:
     """Insert or replace the gtpAdvertiseIp field (after gtpIp if not present)."""
     f = GNB_CFG
+    line = f"gtpAdvertiseIp: {gtp_advertise_ip}"
     script = (
-        f"awk '/^gtpAdvertiseIp:/{{found=1; "
-        f"print \"gtpAdvertiseIp: {gtp_advertise_ip}\"; next}} "
-        f"/^gtpIp:/ && !found{{print; "
-        f"print \"gtpAdvertiseIp: {gtp_advertise_ip}\"; found=1; next}} "
-        f"{{print}}' "
-        f"{f} > {f}.tmp && mv {f}.tmp {f}"
+        f"if grep -q '^gtpAdvertiseIp:' {f}; then "
+        f"sed -i 's/^gtpAdvertiseIp: .*/{line}/' {f}; "
+        f"else awk '{{print}} /^gtpIp:/ && !found{{print \"{line}\"; found=1}}' "
+        f"{f} > {f}.tmp && mv {f}.tmp {f}; fi"
     )
     return [["sh", "-c", script]]
 
