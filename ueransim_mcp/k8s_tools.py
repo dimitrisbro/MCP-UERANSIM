@@ -1,4 +1,5 @@
 import time
+from types import SimpleNamespace
 from typing import Optional
 
 from .app import mcp
@@ -13,8 +14,9 @@ from .validators import (
     validate_op_type, validate_session_type, validate_supi, validate_hex_key,
 )
 from .k8s_utils import (
-    MANAGED_BY, get_k8s_client, exec_in_pod, pod_config_map, read_pod_log, recreate_pod,
-    wait_for_pod_running,
+    MANAGED_BY, build_deployment, exec_in_pod, get_apps_client,
+    get_k8s_client, pod_config_map, read_deployment, read_pod_log, recreate_pod,
+    resolve_pod_name, rollout_restart, wait_for_deployment_ready, WORKLOAD_LABEL,
 )
 from .config_ops import (
     apply_config_edit, build_gnb_config, build_ue_config, dump_config, load_template,
@@ -51,20 +53,35 @@ def _config_mount(cfg_path: str):
     )
 
 
-def _edit_pod_config(v1, pod_name: str, namespace: str, cfg_path: str, edit) -> bool:
-    """Apply edit(cfg) to the YAML in the pod's ConfigMap, then recreate the pod.
+def _edit_pod_config(v1, apps, name: str, namespace: str, cfg_path: str, edit) -> bool:
+    """Apply edit(cfg) to the YAML in the workload's ConfigMap, then restart it.
 
-    Returns True once the recreated pod is Running.
+    A Deployment (made by the create tools) gets a rollout restart, never a pod delete; a bare
+    pod (from infra/ or an older version) is recreated. Returns True once the new pod is up.
     """
     import yaml
 
-    pod = v1.read_namespaced_pod(pod_name, namespace)
+    deployment = read_deployment(apps, name, namespace)
+    pod = _template_pod(deployment) if deployment else v1.read_namespaced_pod(name, namespace)
     cm_name, key = pod_config_map(pod, cfg_path)
     cm = v1.read_namespaced_config_map(cm_name, namespace)
     cfg = yaml.safe_load(cm.data[key])
     edit(cfg)
     v1.patch_namespaced_config_map(cm_name, namespace, {"data": {key: dump_config(cfg)}})
-    return recreate_pod(v1, pod)
+    if deployment is None:
+        return recreate_pod(v1, pod)
+    rollout_restart(apps, name, namespace)
+    return wait_for_deployment_ready(apps, name, namespace)
+
+
+def _template_pod(deployment):
+    """The Deployment's pod template shaped like a pod (spec + metadata) for pod_config_map."""
+    return SimpleNamespace(
+        spec=deployment.spec.template.spec,
+        metadata=SimpleNamespace(
+            name=deployment.metadata.name, namespace=deployment.metadata.namespace
+        ),
+    )
 
 
 def _process_running(v1, pod_name: str, namespace: str, binary: str) -> tuple:
@@ -116,12 +133,12 @@ def k8s_create_gnb(
     ignore_stream_ids: bool = True,
     kubeconfig: str = "",
 ) -> GnbCreateResponse:
-    """Create a new gNB Pod in Kubernetes.
+    """Create a new gNB in Kubernetes: a one-replica Deployment (strategy Recreate) plus its ConfigMap.
 
     Args:
         amf_address: AMF IP address
         amf_port: AMF port
-        pod_name: Optional pod name (auto-generated if omitted)
+        pod_name: Optional name of the gNB (Deployment and ConfigMap prefix; auto-generated if omitted)
         namespace: Kubernetes namespace (default: ueransim)
         gnb_image: Container image for the gNB
         image_pull_secret: Name of the K8s docker-registry secret
@@ -172,15 +189,12 @@ def k8s_create_gnb(
             ignore_stream_ids=ignore_stream_ids,
         )
         v1 = get_k8s_client(kubeconfig=kubeconfig)
+        apps = get_apps_client(kubeconfig=kubeconfig)
         v1.create_namespaced_config_map(
             namespace, _config_map(f"{pod_name}-config", namespace, "open5gs-gnb.yaml", cfg)
         )
-        pod_body = client.V1Pod(
-            metadata=client.V1ObjectMeta(
-                name=pod_name, namespace=namespace,
-                labels={"app": "ueransim", "type": "gnb"},
-            ),
-            spec=client.V1PodSpec(
+        pod_spec = (
+            client.V1PodSpec(
                 image_pull_secrets=[client.V1LocalObjectReference(name=image_pull_secret)],
                 containers=[client.V1Container(
                     name="gnb", image=gnb_image, image_pull_policy="IfNotPresent",
@@ -194,19 +208,25 @@ def k8s_create_gnb(
                     name="config",
                     config_map=client.V1ConfigMapVolumeSource(name=f"{pod_name}-config"),
                 )],
+            )
+        )
+        apps.create_namespaced_deployment(
+            namespace=namespace,
+            body=build_deployment(
+                pod_name, namespace, {"app": "ueransim", "type": "gnb", "gnb": pod_name}, pod_spec
             ),
         )
-        v1.create_namespaced_pod(namespace=namespace, body=pod_body)
 
-        if not wait_for_pod_running(v1, pod_name, namespace):
+        if not wait_for_deployment_ready(apps, pod_name, namespace):
             return GnbCreateResponse(
                 status="error", container_id=pod_name, container_name=pod_name,
                 configuration=_empty_cfg(),
-                message=f"Pod {pod_name} did not reach Running state within 60s",
+                message=f"Deployment {pod_name} did not become ready within 60s",
             )
 
         # The pod command replaces the __POD_IP__ placeholders with this IP.
-        pod_ip = v1.read_namespaced_pod(pod_name, namespace).status.pod_ip or ""
+        live_pod = resolve_pod_name(v1, apps, pod_name, namespace)
+        pod_ip = v1.read_namespaced_pod(live_pod, namespace).status.pod_ip or ""
 
         return GnbCreateResponse(
             status="success", container_id=pod_name, container_name=pod_name,
@@ -236,7 +256,8 @@ def k8s_create_gnb(
 
 @mcp.tool()
 def k8s_list_gnbs(namespace: str = "ueransim", kubeconfig: str = "") -> GnbListResponse:
-    """List all gNB pods in the given Kubernetes namespace.
+    """List all gNB pods in the given Kubernetes namespace (name is the Deployment name
+    for pods the create tools made, id the current pod name).
 
     Args:
         namespace: Kubernetes namespace (default: ueransim)
@@ -247,7 +268,8 @@ def k8s_list_gnbs(namespace: str = "ueransim", kubeconfig: str = "") -> GnbListR
         v1 = get_k8s_client(kubeconfig=kubeconfig)
         pods = v1.list_namespaced_pod(namespace, label_selector="type=gnb").items
         containers = [
-            GnbContainer(id=p.metadata.name, name=p.metadata.name,
+            GnbContainer(id=p.metadata.name,
+                         name=(p.metadata.labels or {}).get(WORKLOAD_LABEL, p.metadata.name),
                          status=p.status.phase or "Unknown",
                          created=str(p.metadata.creation_timestamp))
             for p in pods
@@ -265,7 +287,7 @@ def k8s_delete_gnb(pod_name: str, namespace: str = "ueransim", kubeconfig: str =
     """Delete a gNB pod from Kubernetes.
 
     Args:
-        pod_name: Pod name
+        pod_name: Name of the gNB/UE (its Deployment; a bare pod name also works)
         namespace: Kubernetes namespace (default: ueransim)
         kubeconfig: path to a kubeconfig file. If omitted, uses the current kubectl context.
         confirm: must be True to authorise the delete operation.
@@ -281,12 +303,23 @@ def k8s_delete_gnb(pod_name: str, namespace: str = "ueransim", kubeconfig: str =
             )
         validate_container_name(pod_name, "gnb")
         v1 = get_k8s_client(kubeconfig=kubeconfig)
-        pod = v1.read_namespaced_pod(pod_name, namespace)
-        v1.delete_namespaced_pod(pod_name, namespace,
-                                 body=client.V1DeleteOptions(grace_period_seconds=0))
-        _delete_managed_config_map(v1, pod, GNB_CFG)
+        apps = get_apps_client(kubeconfig=kubeconfig)
+        deployment = read_deployment(apps, pod_name, namespace)
+        if deployment is not None:
+            apps.delete_namespaced_deployment(
+                pod_name, namespace, body=client.V1DeleteOptions(propagation_policy="Foreground")
+            )
+            _delete_managed_config_map(v1, _template_pod(deployment), GNB_CFG)
+            kind_name = "Deployment"
+        else:
+            pod = v1.read_namespaced_pod(pod_name, namespace)
+            v1.delete_namespaced_pod(pod_name, namespace,
+                                     body=client.V1DeleteOptions(grace_period_seconds=0))
+            _delete_managed_config_map(v1, pod, GNB_CFG)
+            kind_name = "Pod"
         return GnbOperationResponse(
-            status="success", message=f"Pod {pod_name} deleted from namespace {namespace}",
+            status="success",
+            message=f"{kind_name} {pod_name} deleted from namespace {namespace}",
             container=pod_name,
         )
     except ValueError as e:
@@ -308,7 +341,7 @@ def k8s_get_gnb_logs(
     """Get logs from a gNB pod.
 
     Args:
-        pod_name: Pod name
+        pod_name: Name of the gNB/UE (its Deployment; a bare pod name also works)
         lines: Number of log lines to retrieve (default: 100)
         namespace: Kubernetes namespace (default: ueransim)
         kubeconfig: path to a kubeconfig file. If omitted, uses the current kubectl context.
@@ -317,7 +350,8 @@ def k8s_get_gnb_logs(
     try:
         validate_container_name(pod_name, "gnb")
         v1 = get_k8s_client(kubeconfig=kubeconfig)
-        logs = read_pod_log(v1, pod_name, namespace, lines)
+        apps = get_apps_client(kubeconfig=kubeconfig)
+        logs = read_pod_log(v1, resolve_pod_name(v1, apps, pod_name, namespace), namespace, lines)
         return GnbOperationResponse(status="success", message="Logs retrieved successfully",
                                     container=pod_name, logs=logs)
     except ValueError as e:
@@ -337,7 +371,7 @@ def k8s_attach_gnb_to_core(
     pod_name: str, amf_address: str = "127.0.0.5", namespace: str = "ueransim",
     kubeconfig: str = "",
 ) -> GnbOperationResponse:
-    """Point a gNB pod at an AMF: update its ConfigMap and recreate the pod.
+    """Point a gNB at an AMF: update its ConfigMap and restart its Deployment (rollout restart).
 
     Args:
         pod_name: gNB pod name
@@ -350,17 +384,20 @@ def k8s_attach_gnb_to_core(
         validate_ip(amf_address)
         validate_container_name(pod_name, "gnb")
         v1 = get_k8s_client(kubeconfig=kubeconfig)
+        apps = get_apps_client(kubeconfig=kubeconfig)
 
         def set_amf(cfg: dict) -> None:
             cfg["amfConfigs"][0]["address"] = amf_address
 
-        if not _edit_pod_config(v1, pod_name, namespace, GNB_CFG, set_amf):
+        if not _edit_pod_config(v1, apps, pod_name, namespace, GNB_CFG, set_amf):
             return GnbOperationResponse(
                 status="error", container=pod_name,
-                message=f"Pod {pod_name} did not reach Running state after the restart",
+                message=f"{pod_name} did not reach Running state after the restart",
             )
         time.sleep(2)
-        running, status_out = _process_running(v1, pod_name, namespace, "nr-gnb")
+        running, status_out = _process_running(
+            v1, resolve_pod_name(v1, apps, pod_name, namespace), namespace, "nr-gnb"
+        )
 
         return GnbOperationResponse(
             status="success" if running else "warning",
@@ -387,14 +424,17 @@ def k8s_inspect_pod_ip(pod_name: str, namespace: str = "ueransim", kubeconfig: s
     """Return the IP address of a Kubernetes pod.
 
     Args:
-        pod_name: Pod name
+        pod_name: Name of the gNB/UE (its Deployment; a bare pod name also works)
         namespace: Kubernetes namespace (default: ueransim)
         kubeconfig: path to a kubeconfig file. If omitted, uses the current kubectl context.
     """
     from kubernetes.client.rest import ApiException
     try:
         v1 = get_k8s_client(kubeconfig=kubeconfig)
-        pod_ip = v1.read_namespaced_pod(pod_name, namespace).status.pod_ip
+        apps = get_apps_client(kubeconfig=kubeconfig)
+        pod_ip = v1.read_namespaced_pod(
+            resolve_pod_name(v1, apps, pod_name, namespace), namespace
+        ).status.pod_ip
         if not pod_ip:
             return GnbOperationResponse(
                 status="error", message=f"No IP found for pod {pod_name}", container=pod_name
@@ -435,7 +475,7 @@ def k8s_create_ue(
     tun_netmask: str = "255.255.255.0",
     kubeconfig: str = "",
 ) -> UeCreateResponse:
-    """Create a new UE Pod in Kubernetes.
+    """Create a new UE in Kubernetes: a one-replica Deployment (strategy Recreate) plus its ConfigMap.
 
     Args:
         gnb_search_list: gNB IP for Radio Link Simulation, or 'auto' to use first gNB
@@ -500,15 +540,12 @@ def k8s_create_ue(
             tun_netmask=tun_netmask,
         )
         v1 = get_k8s_client(kubeconfig=kubeconfig)
+        apps = get_apps_client(kubeconfig=kubeconfig)
         v1.create_namespaced_config_map(
             namespace, _config_map(f"{pod_name}-config", namespace, "open5gs-ue.yaml", cfg)
         )
-        pod_body = client.V1Pod(
-            metadata=client.V1ObjectMeta(
-                name=pod_name, namespace=namespace,
-                labels={"app": "ueransim", "type": "ue"},
-            ),
-            spec=client.V1PodSpec(
+        pod_spec = (
+            client.V1PodSpec(
                 # Own network namespace, as the infra/ UE pools: with hostNetwork the UE's
                 # uesimtun address lives on the node, and a UPF on the same node drops/keeps
                 # the replies locally (no user-plane traffic) and its ip rules leak.
@@ -537,15 +574,18 @@ def k8s_create_ue(
                         config_map=client.V1ConfigMapVolumeSource(name=f"{pod_name}-config"),
                     ),
                 ],
-            ),
+            )
         )
-        v1.create_namespaced_pod(namespace=namespace, body=pod_body)
+        apps.create_namespaced_deployment(
+            namespace=namespace,
+            body=build_deployment(pod_name, namespace, {"app": "ueransim", "type": "ue"}, pod_spec),
+        )
 
-        if not wait_for_pod_running(v1, pod_name, namespace):
+        if not wait_for_deployment_ready(apps, pod_name, namespace):
             return UeCreateResponse(
                 status="error", container_id=pod_name, container_name=pod_name,
                 configuration=_empty_cfg(gnb_search_list),
-                message=f"Pod {pod_name} did not reach Running state within 60s",
+                message=f"Deployment {pod_name} did not become ready within 60s",
             )
 
         return UeCreateResponse(
@@ -576,7 +616,8 @@ def k8s_create_ue(
 
 @mcp.tool()
 def k8s_list_ues(namespace: str = "ueransim", kubeconfig: str = "") -> UeListResponse:
-    """List all UE pods in the given Kubernetes namespace.
+    """List all UE pods in the given Kubernetes namespace (name is the Deployment name
+    for pods the create tools made, id the current pod name).
 
     Args:
         namespace: Kubernetes namespace (default: ueransim)
@@ -587,7 +628,8 @@ def k8s_list_ues(namespace: str = "ueransim", kubeconfig: str = "") -> UeListRes
         v1 = get_k8s_client(kubeconfig=kubeconfig)
         pods = v1.list_namespaced_pod(namespace, label_selector="type=ue").items
         containers = [
-            UeContainer(id=p.metadata.name, name=p.metadata.name,
+            UeContainer(id=p.metadata.name,
+                        name=(p.metadata.labels or {}).get(WORKLOAD_LABEL, p.metadata.name),
                         status=p.status.phase or "Unknown",
                         created=str(p.metadata.creation_timestamp))
             for p in pods
@@ -605,7 +647,7 @@ def k8s_delete_ue(pod_name: str, namespace: str = "ueransim", kubeconfig: str = 
     """Delete a UE pod from Kubernetes.
 
     Args:
-        pod_name: Pod name
+        pod_name: Name of the gNB/UE (its Deployment; a bare pod name also works)
         namespace: Kubernetes namespace (default: ueransim)
         kubeconfig: path to a kubeconfig file. If omitted, uses the current kubectl context.
         confirm: must be True to authorise the delete operation.
@@ -621,12 +663,23 @@ def k8s_delete_ue(pod_name: str, namespace: str = "ueransim", kubeconfig: str = 
             )
         validate_container_name(pod_name, "ue")
         v1 = get_k8s_client(kubeconfig=kubeconfig)
-        pod = v1.read_namespaced_pod(pod_name, namespace)
-        v1.delete_namespaced_pod(pod_name, namespace,
-                                 body=client.V1DeleteOptions(grace_period_seconds=0))
-        _delete_managed_config_map(v1, pod, UE_CFG)
+        apps = get_apps_client(kubeconfig=kubeconfig)
+        deployment = read_deployment(apps, pod_name, namespace)
+        if deployment is not None:
+            apps.delete_namespaced_deployment(
+                pod_name, namespace, body=client.V1DeleteOptions(propagation_policy="Foreground")
+            )
+            _delete_managed_config_map(v1, _template_pod(deployment), UE_CFG)
+            kind_name = "Deployment"
+        else:
+            pod = v1.read_namespaced_pod(pod_name, namespace)
+            v1.delete_namespaced_pod(pod_name, namespace,
+                                     body=client.V1DeleteOptions(grace_period_seconds=0))
+            _delete_managed_config_map(v1, pod, UE_CFG)
+            kind_name = "Pod"
         return UeOperationResponse(
-            status="success", message=f"Pod {pod_name} deleted from namespace {namespace}",
+            status="success",
+            message=f"{kind_name} {pod_name} deleted from namespace {namespace}",
             container=pod_name,
         )
     except ValueError as e:
@@ -648,7 +701,7 @@ def k8s_get_ue_logs(
     """Get logs from a UE pod.
 
     Args:
-        pod_name: Pod name
+        pod_name: Name of the gNB/UE (its Deployment; a bare pod name also works)
         lines: Number of log lines to retrieve (default: 100)
         namespace: Kubernetes namespace (default: ueransim)
         kubeconfig: path to a kubeconfig file. If omitted, uses the current kubectl context.
@@ -657,7 +710,8 @@ def k8s_get_ue_logs(
     try:
         validate_container_name(pod_name, "ue")
         v1 = get_k8s_client(kubeconfig=kubeconfig)
-        logs = read_pod_log(v1, pod_name, namespace, lines)
+        apps = get_apps_client(kubeconfig=kubeconfig)
+        logs = read_pod_log(v1, resolve_pod_name(v1, apps, pod_name, namespace), namespace, lines)
         return UeOperationResponse(status="success", message="Logs retrieved successfully",
                                    container=pod_name, logs=logs)
     except ValueError as e:
@@ -676,7 +730,7 @@ def k8s_get_ue_logs(
 def k8s_attach_ue_to_gnb(
     ue_pod_name: str, gnb_pod_name: str, namespace: str = "ueransim", kubeconfig: str = "",
 ) -> UeOperationResponse:
-    """Point a UE pod at a gNB pod's IP: update its ConfigMap and recreate the pod.
+    """Point a UE at a gNB's pod IP: update its ConfigMap and restart its Deployment (rollout restart).
 
     Args:
         ue_pod_name: UE pod name
@@ -689,6 +743,7 @@ def k8s_attach_ue_to_gnb(
         validate_container_name(ue_pod_name, "ue")
         validate_container_name(gnb_pod_name, "gnb")
         v1 = get_k8s_client(kubeconfig=kubeconfig)
+        apps = get_apps_client(kubeconfig=kubeconfig)
 
         gnb_ip_result = k8s_inspect_pod_ip(gnb_pod_name, namespace, kubeconfig=kubeconfig)
         if gnb_ip_result.status != "success" or not gnb_ip_result.logs:
@@ -702,15 +757,19 @@ def k8s_attach_ue_to_gnb(
         def set_gnb(cfg: dict) -> None:
             cfg["gnbSearchList"] = [gnb_ip]
 
-        if not _edit_pod_config(v1, ue_pod_name, namespace, UE_CFG, set_gnb):
+        if not _edit_pod_config(v1, apps, ue_pod_name, namespace, UE_CFG, set_gnb):
             return UeOperationResponse(
                 status="error", container=ue_pod_name,
-                message=f"Pod {ue_pod_name} did not reach Running state after the restart",
+                message=f"{ue_pod_name} did not reach Running state after the restart",
             )
         time.sleep(3)
 
-        gnb_ok, gnb_out = _process_running(v1, gnb_pod_name, namespace, "nr-gnb")
-        ue_ok, ue_out = _process_running(v1, ue_pod_name, namespace, "nr-ue")
+        gnb_ok, gnb_out = _process_running(
+            v1, resolve_pod_name(v1, apps, gnb_pod_name, namespace), namespace, "nr-gnb"
+        )
+        ue_ok, ue_out = _process_running(
+            v1, resolve_pod_name(v1, apps, ue_pod_name, namespace), namespace, "nr-ue"
+        )
         details = [
             "gNB: nr-gnb active" if gnb_ok else "gNB: nr-gnb not running",
             "UE: nr-ue active"   if ue_ok  else "UE: nr-ue not running",
@@ -743,7 +802,7 @@ def k8s_edit_pod_config(
     namespace: str = "ueransim",
     kubeconfig: str = "",
 ) -> UeOperationResponse:
-    """Edit one configuration field of a gNB/UE pod: update its ConfigMap and recreate the pod.
+    """Edit one configuration field of a gNB/UE: update its ConfigMap and restart its Deployment.
 
     Args:
         pod_name: Pod name (gnb-* or ue-*)
@@ -759,6 +818,7 @@ def k8s_edit_pod_config(
     from kubernetes.client.rest import ApiException
     try:
         v1 = get_k8s_client(kubeconfig=kubeconfig)
+        apps = get_apps_client(kubeconfig=kubeconfig)
         ctype = _pod_type(pod_name)
         # Dry-run on the template to reject an unsupported field before touching the pod.
         if ctype == "unknown" or not apply_config_edit(load_template(ctype), ctype,
@@ -772,13 +832,13 @@ def k8s_edit_pod_config(
 
         cfg_path = GNB_CFG if ctype == "gnb" else UE_CFG
         running = _edit_pod_config(
-            v1, pod_name, namespace, cfg_path,
+            v1, apps, pod_name, namespace, cfg_path,
             lambda cfg: apply_config_edit(cfg, ctype, config_type, config_value),
         )
         return UeOperationResponse(
             status="success" if running else "error",
             message=(f"Pod {pod_name} updated: {config_type}={config_value}"
-                     if running else f"Pod {pod_name} did not reach Running state after the restart"),
+                     if running else f"{pod_name} did not reach Running state after the restart"),
             container=pod_name,
         )
 
