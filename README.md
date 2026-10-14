@@ -92,28 +92,28 @@ All Kubernetes tools mirror their Docker counterparts and default to the `uerans
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `k8s_create_gnb` | Create a gNB pod | `amf_address`, `amf_port`, `pod_name`, `namespace`, `gnb_image`, `image_pull_secret`, `kubeconfig` |
+| `k8s_create_gnb` | Create a gNB as a Deployment (`replicas: 1`, strategy `Recreate`) with its ConfigMap | `amf_address`, `amf_port`, `pod_name`, `namespace`, `gnb_image`, `image_pull_secret`, `kubeconfig` |
 | `k8s_list_gnbs` | List all gNB pods | `namespace`, `kubeconfig` |
-| `k8s_delete_gnb` | Delete a gNB pod | `pod_name`, `namespace`, `kubeconfig` |
+| `k8s_delete_gnb` | Delete a gNB (its Deployment and tool-created ConfigMap) | `pod_name`, `namespace`, `kubeconfig` |
 | `k8s_get_gnb_logs` | Get logs from a gNB pod | `pod_name`, `lines`, `namespace`, `kubeconfig` |
-| `k8s_attach_gnb_to_core` | Point the gNB at an AMF (updates its ConfigMap, recreates the pod) | `pod_name`, `amf_address`, `namespace`, `kubeconfig` |
+| `k8s_attach_gnb_to_core` | Point the gNB at an AMF (updates its ConfigMap, rollout-restarts the Deployment) | `pod_name`, `amf_address`, `namespace`, `kubeconfig` |
 
 #### UE
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `k8s_create_ue` | Create a UE pod | `gnb_search_list`, `pod_name`, `namespace`, `ue_image`, `image_pull_secret`, `kubeconfig` |
+| `k8s_create_ue` | Create a UE as a Deployment (`replicas: 1`, strategy `Recreate`) with its ConfigMap | `gnb_search_list`, `pod_name`, `namespace`, `ue_image`, `image_pull_secret`, `kubeconfig` |
 | `k8s_list_ues` | List all UE pods | `namespace`, `kubeconfig` |
-| `k8s_delete_ue` | Delete a UE pod | `pod_name`, `namespace`, `kubeconfig` |
+| `k8s_delete_ue` | Delete a UE (its Deployment and tool-created ConfigMap) | `pod_name`, `namespace`, `kubeconfig` |
 | `k8s_get_ue_logs` | Get logs from a UE pod | `pod_name`, `lines`, `namespace`, `kubeconfig` |
-| `k8s_attach_ue_to_gnb` | Point the UE at a gNB pod's IP (updates its ConfigMap, recreates the pod) | `ue_pod_name`, `gnb_pod_name`, `namespace`, `kubeconfig` |
+| `k8s_attach_ue_to_gnb` | Point the UE at a gNB pod's IP (updates its ConfigMap, rollout-restarts the Deployment) | `ue_pod_name`, `gnb_pod_name`, `namespace`, `kubeconfig` |
 
 #### Common
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
 | `k8s_inspect_pod_ip` | Get a pod's IP address | `pod_name`, `namespace`, `kubeconfig` |
-| `k8s_edit_pod_config` | Edit one config field (updates the pod's ConfigMap, recreates the pod) | `pod_name`, `config_type`, `config_value`, `namespace`, `kubeconfig` |
+| `k8s_edit_pod_config` | Edit one config field (updates the ConfigMap, rollout-restarts the Deployment) | `pod_name`, `config_type`, `config_value`, `namespace`, `kubeconfig` |
 
 ## Installation
 
@@ -230,7 +230,13 @@ k8s_create_ue   ──►  (UE pod running, nr-ue active)
 Unlike the Docker tools, K8s pods start `nr-gnb`/`nr-ue` as PID 1. Each pod reads its
 config from a ConfigMap mounted read-only at `/etc/ueransim/` (`<pod>-config`, created by
 the create tools; the gNB command fills `__POD_IP__` with the pod IP). The attach and
-edit tools change that ConfigMap and recreate the pod — a pod without such a ConfigMap
+edit tools change that ConfigMap and rollout-restart the Deployment. The create tools make a
+Deployment (`replicas: 1`, `strategy: Recreate`, so two gNBs with the same NCI never connect to the AMF at
+once): a deleted, evicted or node-lost pod comes back by itself. Tools take the Deployment name and find its
+pod through the label selector (`ueransim-mcp/workload=<name>`; pod names carry a hash suffix). A pod
+name also works: it is mapped to its Deployment. Delete returns once the Deployment is gone. The MCP's
+service account needs `get/list/create/patch/delete` on `deployments` (apps). A bare pod made by `infra/` is
+still recreated by the attach/edit tools. A pod without such a ConfigMap
 (e.g. one created by an older version) is refused. `k8s_delete_*` also removes the
 ConfigMap if the create tools made it (label `app.kubernetes.io/managed-by=ueransim-mcp`).
 
@@ -241,7 +247,7 @@ ConfigMap if the create tools made it (label `app.kubernetes.io/managed-by=ueran
 gnb = k8s_create_gnb(amf_address="192.168.100.1", namespace="ueransim")
 ue  = k8s_create_ue(gnb_search_list="auto", namespace="ueransim")
 
-# 2. Re-point later (recreates the pod)
+# 2. Re-point later (rollout restart)
 k8s_attach_gnb_to_core(pod_name=gnb.container_name, amf_address="192.168.100.2")
 k8s_attach_ue_to_gnb(
     ue_pod_name=ue.container_name,
@@ -271,9 +277,9 @@ ue = k8s_create_ue(
 
 ### Pod specifications
 
-**gNB pod** — `NET_ADMIN` capability, regular pod networking.
+**gNB** — Deployment (1 replica, `Recreate`) of a pod with `NET_ADMIN` capability, regular pod networking.
 
-**UE pod** — `privileged`, `NET_ADMIN`, `/dev/net/tun` device mounted, own network namespace (no `hostNetwork`: a UPF on the same node could not route the UE's traffic). Requires the cluster's admission policy to allow privileged pods (set `PodSecurity` to `privileged` profile on the namespace).
+**UE** — Deployment (1 replica, `Recreate`) of a pod with `privileged`, `NET_ADMIN`, `/dev/net/tun` device mounted, own network namespace (no `hostNetwork`: a UPF on the same node could not route the UE's traffic). Requires the cluster's admission policy to allow privileged pods (set `PodSecurity` to `privileged` profile on the namespace).
 
 ## Configuration
 

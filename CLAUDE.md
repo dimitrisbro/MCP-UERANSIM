@@ -17,7 +17,7 @@ ueransim_mcp/
   config_ops.py   — returns List[List[str]] sed/awk commands; shared by Docker and K8s tools
   docker_utils.py — get_container_runtime, run_container_command, detect_image_os, get_container_name
   docker_tools.py — 12 Docker @mcp.tool() functions
-  k8s_utils.py    — get_k8s_client(kubeconfig=""), exec_in_pod, wait_for_pod_running
+  k8s_utils.py    — get_k8s_client / get_apps_client(kubeconfig=""), exec_in_pod, build_deployment, rollout_restart, wait_for_deployment_ready, resolve_pod_name
   k8s_tools.py    — 12 Kubernetes @mcp.tool() functions (all accept kubeconfig: str = "")
 
 config/           — UERANSIM YAML templates (open5gs-gnb.yaml, open5gs-ue.yaml)
@@ -53,7 +53,7 @@ uv run --no-project --with pytest --with kubernetes==36.0.3 --with mcp==1.30.0 p
 `tests/test_validators.py`, `tests/test_config_ops.py` (Docker sed/awk builders, run against a copy of
 the config templates, and the K8s dict builders) and `tests/test_k8s_helpers.py` need no cluster or Docker.
 
-`tests/test_k8s_tools.py` covers the K8s pod commands, ConfigMap building/edits and the
+`tests/test_k8s_tools.py` covers the K8s pod commands, ConfigMap building/edits, the Deployment build and the
 create/attach/edit/delete tools against a mocked Kubernetes API.
 
 ## Kubernetes cluster
@@ -67,7 +67,7 @@ create/attach/edit/delete tools against a mocked Kubernetes API.
 ## Key design decisions
 
 - **Docker: no auto-start**: containers run `tail -f /dev/null` and UERANSIM binaries are started by the MCP tools (`attach_gnb_to_core`, `attach_ue_to_gnb`).
-- **K8s: ConfigMap + recreate**: pods run `nr-gnb`/`nr-ue` as PID 1 from a read-only ConfigMap mount (`<pod>-config`, same shape as networkAssistant's `infra/` manifests). Attach/edit tools edit the YAML in that ConfigMap (`config_ops.apply_config_edit`) and recreate the pod (`k8s_utils.recreate_pod`); they never exec `sed` into K8s pods. Templates come from `config/` (copied into the MCP image).
+- **K8s: Deployment + ConfigMap + rollout restart**: the create tools make a one-replica Deployment (`strategy: Recreate`, selector label `ueransim-mcp/workload=<name>`) whose pod runs `nr-gnb`/`nr-ue` as PID 1 from a read-only ConfigMap mount (`<name>-config`, same shape as networkAssistant's `infra/` manifests); a lost pod comes back by itself. Tools take the Deployment name and find the pod through its selector (`k8s_utils.resolve_pod_name`); a pod name of a tool-made Deployment is mapped to the Deployment first (`k8s_utils.workload_name`), so it never deletes or recreates that pod. Attach/edit tools edit the YAML in that ConfigMap (`config_ops.apply_config_edit`) and rollout-restart the Deployment (`k8s_utils.rollout_restart`), never deleting a pod; a bare pod (infra/ or older) falls back to `recreate_pod`. Delete removes the Deployment, waits until it is gone (a same-name create would 409), then the tool-created ConfigMap; a failed Deployment create removes the ConfigMap it just made. They never exec `sed` into K8s pods. Templates come from `config/` (copied into the MCP image).
 - **Config via sed/awk (Docker)**: scalar fields updated with `sed -i`, YAML block sections (slices) replaced with POSIX awk. Logic lives in `config_ops.py` and is reused by both Docker and K8s tools.
 - **busybox awk compatibility**: awk patterns in `config_ops.py` and entrypoint scripts are written to work on both busybox (Alpine) and mawk/gawk (Ubuntu).
 - **Container name detection**: `_detect_type()` in `docker_tools.py` infers gnb/ue from the container name prefix. Same logic applies in `k8s_tools.py`.
