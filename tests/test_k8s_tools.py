@@ -17,7 +17,7 @@ from ueransim_mcp.config_ops import (
 )
 from ueransim_mcp.k8s_utils import (
     MANAGED_BY, RESTARTED_AT, WORKLOAD_LABEL, deployment_pod_name, pod_config_map,
-    resolve_pod_name, wait_for_deployment_ready,
+    resolve_pod_name, wait_for_deployment_deleted, wait_for_deployment_ready,
 )
 
 GNB_ARGS = dict(
@@ -139,7 +139,8 @@ def apps():
     api = MagicMock()
     api.read_namespaced_deployment.side_effect = ApiException(status=404)
     with patch.object(k8s_tools, "get_apps_client", return_value=api), \
-         patch.object(k8s_tools, "wait_for_deployment_ready", return_value=True):
+         patch.object(k8s_tools, "wait_for_deployment_ready", return_value=True), \
+         patch.object(k8s_tools, "wait_for_deployment_deleted", return_value=True):
         yield api
 
 
@@ -268,8 +269,8 @@ def test_edit_pod_config_rolls_the_deployment(v1, apps) -> None:
 
 def test_attach_gnb_still_recreates_a_bare_pod(v1, apps) -> None:
     pod = _pod("gnb-1a", GNB_CFG, "gnb-1a-config")
-    # read #1: the tool reads the pod; read #2: wait_for_pod_deleted sees it gone.
-    v1.read_namespaced_pod.side_effect = [pod, ApiException(status=404)]
+    # reads: workload_name (no owning Deployment), the tool, wait_for_pod_deleted sees it gone.
+    v1.read_namespaced_pod.side_effect = [pod, pod, ApiException(status=404)]
     v1.read_namespaced_config_map.return_value = SimpleNamespace(
         data={"open5gs-gnb.yaml": yaml.safe_dump(build_gnb_config(**GNB_ARGS))})
 
@@ -354,6 +355,103 @@ def test_delete_still_removes_a_bare_pod(v1, apps) -> None:
     assert result.status == "success"
     v1.delete_namespaced_pod.assert_called_once()
     apps.delete_namespaced_deployment.assert_not_called()
+
+
+def _owned_pod(pod_name: str, workload: str, cfg_path: str = GNB_CFG):
+    """A pod of a tool-made Deployment, as a pod name (hash suffix) finds it."""
+    pod = _pod(pod_name, cfg_path, f"{workload}-config")
+    pod.metadata.labels = {"type": "gnb", WORKLOAD_LABEL: workload}
+    return pod
+
+
+def _only_deployment(dep):
+    """read_namespaced_deployment: ``dep`` by its name, 404 for anything else (a pod name)."""
+    def read(name, namespace):
+        if name != dep.metadata.name:
+            raise ApiException(status=404)
+        return dep
+    return read
+
+
+def test_delete_by_pod_name_removes_the_deployment_not_the_pod(v1, apps) -> None:
+    dep = _deployment("gnb-x", GNB_CFG, "gnb-x-config")
+    apps.read_namespaced_deployment.side_effect = _only_deployment(dep)
+    v1.read_namespaced_pod.return_value = _owned_pod("gnb-x-7d9f-abcde", "gnb-x")
+    v1.read_namespaced_config_map.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(labels=MANAGED_BY))
+
+    result = k8s_tools.k8s_delete_gnb("gnb-x-7d9f-abcde", namespace="net-demo", confirm=True)
+
+    assert result.status == "success"
+    assert apps.delete_namespaced_deployment.call_args.args[:2] == ("gnb-x", "net-demo")
+    v1.delete_namespaced_pod.assert_not_called()
+
+
+def test_attach_by_pod_name_rolls_the_deployment_and_never_recreates_the_pod(v1, apps) -> None:
+    dep = _deployment("gnb-1a", GNB_CFG, "gnb-1a-config")
+    apps.read_namespaced_deployment.side_effect = _only_deployment(dep)
+    pod = _owned_pod("gnb-1a-6c7d-xyz12", "gnb-1a")
+    v1.read_namespaced_pod.return_value = pod
+    v1.list_namespaced_pod.return_value = SimpleNamespace(items=[pod])
+    v1.read_namespaced_config_map.return_value = SimpleNamespace(
+        data={"open5gs-gnb.yaml": yaml.safe_dump(build_gnb_config(**GNB_ARGS))})
+
+    with patch.object(k8s_tools, "exec_in_pod", return_value=("nr-gnb is running", "")):
+        result = k8s_tools.k8s_attach_gnb_to_core("gnb-1a-6c7d-xyz12", amf_address="10.9.9.9",
+                                                  namespace="net-demo")
+
+    assert result.status == "success"
+    assert apps.patch_namespaced_deployment.call_args.args[:2] == ("gnb-1a", "net-demo")
+    v1.delete_namespaced_pod.assert_not_called()
+    v1.create_namespaced_pod.assert_not_called()
+
+
+def test_delete_reports_a_deployment_still_being_deleted(v1, apps) -> None:
+    apps.read_namespaced_deployment.side_effect = None
+    apps.read_namespaced_deployment.return_value = _deployment("gnb-x", GNB_CFG, "gnb-x-config")
+
+    with patch.object(k8s_tools, "wait_for_deployment_deleted", return_value=False):
+        result = k8s_tools.k8s_delete_gnb("gnb-x", namespace="net-demo", confirm=True)
+
+    assert result.status == "error" and "still being deleted" in result.message
+    v1.delete_namespaced_config_map.assert_not_called()
+
+
+def test_wait_for_deployment_deleted_waits_for_the_404() -> None:
+    apps = MagicMock()
+    apps.read_namespaced_deployment.side_effect = [
+        _deployment("gnb-x", GNB_CFG, "c"), ApiException(status=404)]
+    with patch("ueransim_mcp.k8s_utils.time.sleep"):
+        assert wait_for_deployment_deleted(apps, "gnb-x", "net-demo", timeout=5)
+    assert apps.read_namespaced_deployment.call_count == 2
+
+
+def test_failed_deployment_create_removes_its_config_map(v1, apps) -> None:
+    apps.create_namespaced_deployment.side_effect = ApiException(status=409, reason="Conflict")
+
+    result = k8s_tools.k8s_create_gnb(amf_address="10.0.0.5", pod_name="gnb-x",
+                                      namespace="net-demo")
+
+    assert result.status == "error" and "409" in result.message
+    v1.delete_namespaced_config_map.assert_called_once_with("gnb-x-config", "net-demo")
+
+
+def test_wait_for_deployment_ready_surfaces_api_errors() -> None:
+    apps = MagicMock()
+    apps.read_namespaced_deployment_status.side_effect = ApiException(status=403)
+
+    with pytest.raises(ApiException):
+        wait_for_deployment_ready(apps, "gnb-x", "net-demo", timeout=5)
+
+
+def test_list_gnbs_skips_terminating_pods(v1, apps) -> None:
+    old, new = _owned_pod("gnb-1a-old", "gnb-1a"), _owned_pod("gnb-1a-new", "gnb-1a")
+    old.metadata.deletion_timestamp = "now"
+    v1.list_namespaced_pod.return_value = SimpleNamespace(items=[old, new])
+
+    result = k8s_tools.k8s_list_gnbs(namespace="net-demo")
+
+    assert [c.id for c in result.containers] == ["gnb-1a-new"]
 
 
 def test_list_gnbs_reports_the_deployment_name_for_hash_suffixed_pods(v1, apps) -> None:

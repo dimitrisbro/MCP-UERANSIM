@@ -233,7 +233,8 @@ the create tools; the gNB command fills `__POD_IP__` with the pod IP). The attac
 edit tools change that ConfigMap and rollout-restart the Deployment. The create tools make a
 Deployment (`replicas: 1`, `strategy: Recreate`, so two gNBs with the same NCI never connect to the AMF at
 once): a deleted, evicted or node-lost pod comes back by itself. Tools take the Deployment name and find its
-pod through the label selector (`ueransim-mcp/workload=<name>`; pod names carry a hash suffix). The MCP's
+pod through the label selector (`ueransim-mcp/workload=<name>`; pod names carry a hash suffix). A pod
+name also works: it is mapped to its Deployment. Delete returns once the Deployment is gone. The MCP's
 service account needs `get/list/create/patch/delete` on `deployments` (apps). A bare pod made by `infra/` is
 still recreated by the attach/edit tools. A pod without such a ConfigMap
 (e.g. one created by an older version) is refused. `k8s_delete_*` also removes the

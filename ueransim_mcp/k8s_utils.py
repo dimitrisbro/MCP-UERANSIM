@@ -171,6 +171,32 @@ def read_deployment(apps, name: str, namespace: str):
         raise
 
 
+def workload_name(v1, apps, name: str, namespace: str) -> str:
+    """The tools' name for ``name``: the owning Deployment's name when ``name`` is one of its
+    pods (pod names carry a hash suffix), else ``name`` unchanged. Deleting or recreating the
+    pod itself would break the Deployment (its ConfigMap gone) or duplicate it (adoption)."""
+    from kubernetes.client.rest import ApiException
+
+    if read_deployment(apps, name, namespace) is not None:
+        return name
+    try:
+        pod = v1.read_namespaced_pod(name, namespace)
+    except ApiException as e:
+        if e.status == 404:
+            return name
+        raise
+    return (pod.metadata.labels or {}).get(WORKLOAD_LABEL, name)
+
+
+def wait_for_deployment_deleted(apps, name: str, namespace: str, timeout: int = 60) -> bool:
+    """Poll until the Deployment no longer exists (a Foreground delete waits for its pods)."""
+    for _ in range(timeout):
+        if read_deployment(apps, name, namespace) is None:
+            return True
+        time.sleep(1)
+    return False
+
+
 def deployment_pod_name(v1, deployment) -> Optional[str]:
     """The newest live pod behind a Deployment's label selector, or None."""
     selector = ",".join(f"{k}={v}" for k, v in deployment.spec.selector.match_labels.items())
@@ -191,19 +217,16 @@ def resolve_pod_name(v1, apps, name: str, namespace: str) -> str:
 def wait_for_deployment_ready(apps, name: str, namespace: str, timeout: int = 60) -> bool:
     """Poll until the Deployment's rollout is done (one updated, ready replica, no old ones)."""
     for _ in range(timeout):
-        try:
-            d = apps.read_namespaced_deployment_status(name, namespace)
-            want = d.spec.replicas
-            st = d.status
-            if (
-                (st.observed_generation or 0) >= (d.metadata.generation or 0)
-                and (st.updated_replicas or 0) == want
-                and (st.ready_replicas or 0) == want
-                and (st.replicas or 0) == want
-            ):
-                return True
-        except Exception:
-            pass
+        d = apps.read_namespaced_deployment_status(name, namespace)
+        want = d.spec.replicas
+        st = d.status
+        if (
+            (st.observed_generation or 0) >= (d.metadata.generation or 0)
+            and (st.updated_replicas or 0) == want
+            and (st.ready_replicas or 0) == want
+            and (st.replicas or 0) == want
+        ):
+            return True
         time.sleep(1)
     return False
 

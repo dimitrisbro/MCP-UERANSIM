@@ -16,7 +16,8 @@ from .validators import (
 from .k8s_utils import (
     MANAGED_BY, build_deployment, exec_in_pod, get_apps_client,
     get_k8s_client, pod_config_map, read_deployment, read_pod_log, recreate_pod,
-    resolve_pod_name, rollout_restart, wait_for_deployment_ready, WORKLOAD_LABEL,
+    resolve_pod_name, rollout_restart, wait_for_deployment_deleted, wait_for_deployment_ready,
+    workload_name, WORKLOAD_LABEL,
 )
 from .config_ops import (
     apply_config_edit, build_gnb_config, build_ue_config, dump_config, load_template,
@@ -210,12 +211,17 @@ def k8s_create_gnb(
                 )],
             )
         )
-        apps.create_namespaced_deployment(
-            namespace=namespace,
-            body=build_deployment(
-                pod_name, namespace, {"app": "ueransim", "type": "gnb", "gnb": pod_name}, pod_spec
-            ),
-        )
+        try:
+            apps.create_namespaced_deployment(
+                namespace=namespace,
+                body=build_deployment(
+                    pod_name, namespace, {"app": "ueransim", "type": "gnb", "gnb": pod_name},
+                    pod_spec,
+                ),
+            )
+        except ApiException:
+            v1.delete_namespaced_config_map(f"{pod_name}-config", namespace)  # a retry must not 409
+            raise
 
         if not wait_for_deployment_ready(apps, pod_name, namespace):
             return GnbCreateResponse(
@@ -273,6 +279,7 @@ def k8s_list_gnbs(namespace: str = "ueransim", kubeconfig: str = "") -> GnbListR
                          status=p.status.phase or "Unknown",
                          created=str(p.metadata.creation_timestamp))
             for p in pods
+            if not p.metadata.deletion_timestamp
         ]
         return GnbListResponse(status="success", containers=containers, count=len(containers))
     except ApiException as e:
@@ -304,11 +311,18 @@ def k8s_delete_gnb(pod_name: str, namespace: str = "ueransim", kubeconfig: str =
         validate_container_name(pod_name, "gnb")
         v1 = get_k8s_client(kubeconfig=kubeconfig)
         apps = get_apps_client(kubeconfig=kubeconfig)
+        pod_name = workload_name(v1, apps, pod_name, namespace)
         deployment = read_deployment(apps, pod_name, namespace)
         if deployment is not None:
             apps.delete_namespaced_deployment(
                 pod_name, namespace, body=client.V1DeleteOptions(propagation_policy="Foreground")
             )
+            # Until it is gone, creating one with the same name gets a 409.
+            if not wait_for_deployment_deleted(apps, pod_name, namespace):
+                return GnbOperationResponse(
+                    status="error", container=pod_name,
+                    message=f"Deployment {pod_name} was still being deleted after 60s",
+                )
             _delete_managed_config_map(v1, _template_pod(deployment), GNB_CFG)
             kind_name = "Deployment"
         else:
@@ -385,6 +399,7 @@ def k8s_attach_gnb_to_core(
         validate_container_name(pod_name, "gnb")
         v1 = get_k8s_client(kubeconfig=kubeconfig)
         apps = get_apps_client(kubeconfig=kubeconfig)
+        pod_name = workload_name(v1, apps, pod_name, namespace)
 
         def set_amf(cfg: dict) -> None:
             cfg["amfConfigs"][0]["address"] = amf_address
@@ -576,10 +591,16 @@ def k8s_create_ue(
                 ],
             )
         )
-        apps.create_namespaced_deployment(
-            namespace=namespace,
-            body=build_deployment(pod_name, namespace, {"app": "ueransim", "type": "ue"}, pod_spec),
-        )
+        try:
+            apps.create_namespaced_deployment(
+                namespace=namespace,
+                body=build_deployment(
+                    pod_name, namespace, {"app": "ueransim", "type": "ue"}, pod_spec
+                ),
+            )
+        except ApiException:
+            v1.delete_namespaced_config_map(f"{pod_name}-config", namespace)  # a retry must not 409
+            raise
 
         if not wait_for_deployment_ready(apps, pod_name, namespace):
             return UeCreateResponse(
@@ -633,6 +654,7 @@ def k8s_list_ues(namespace: str = "ueransim", kubeconfig: str = "") -> UeListRes
                         status=p.status.phase or "Unknown",
                         created=str(p.metadata.creation_timestamp))
             for p in pods
+            if not p.metadata.deletion_timestamp
         ]
         return UeListResponse(status="success", containers=containers, count=len(containers))
     except ApiException as e:
@@ -664,11 +686,18 @@ def k8s_delete_ue(pod_name: str, namespace: str = "ueransim", kubeconfig: str = 
         validate_container_name(pod_name, "ue")
         v1 = get_k8s_client(kubeconfig=kubeconfig)
         apps = get_apps_client(kubeconfig=kubeconfig)
+        pod_name = workload_name(v1, apps, pod_name, namespace)
         deployment = read_deployment(apps, pod_name, namespace)
         if deployment is not None:
             apps.delete_namespaced_deployment(
                 pod_name, namespace, body=client.V1DeleteOptions(propagation_policy="Foreground")
             )
+            # Until it is gone, creating one with the same name gets a 409.
+            if not wait_for_deployment_deleted(apps, pod_name, namespace):
+                return UeOperationResponse(
+                    status="error", container=pod_name,
+                    message=f"Deployment {pod_name} was still being deleted after 60s",
+                )
             _delete_managed_config_map(v1, _template_pod(deployment), UE_CFG)
             kind_name = "Deployment"
         else:
@@ -744,6 +773,7 @@ def k8s_attach_ue_to_gnb(
         validate_container_name(gnb_pod_name, "gnb")
         v1 = get_k8s_client(kubeconfig=kubeconfig)
         apps = get_apps_client(kubeconfig=kubeconfig)
+        ue_pod_name = workload_name(v1, apps, ue_pod_name, namespace)
 
         gnb_ip_result = k8s_inspect_pod_ip(gnb_pod_name, namespace, kubeconfig=kubeconfig)
         if gnb_ip_result.status != "success" or not gnb_ip_result.logs:
@@ -831,6 +861,7 @@ def k8s_edit_pod_config(
             )
 
         cfg_path = GNB_CFG if ctype == "gnb" else UE_CFG
+        pod_name = workload_name(v1, apps, pod_name, namespace)
         running = _edit_pod_config(
             v1, apps, pod_name, namespace, cfg_path,
             lambda cfg: apply_config_edit(cfg, ctype, config_type, config_value),
