@@ -31,6 +31,8 @@ RUN apk add --no-cache \
 
 # Copy executables and configuration files
 COPY --from=builder /opt/UERANSIM/build/nr-ue /usr/local/bin/
+# nr-cli: deregister a UE before its pod is deleted (nr-ue does not on SIGTERM, so the AMF keeps it)
+COPY --from=builder /opt/UERANSIM/build/nr-cli /usr/local/bin/
 RUN mkdir -p /etc/ueransim
 
 # Copy configuration file
