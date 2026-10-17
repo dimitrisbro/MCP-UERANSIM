@@ -39,7 +39,7 @@ python main.py
 docker buildx build --builder multiarch-builder --platform linux/amd64,linux/arm64 -f docker/gnb_ubuntu.Dockerfile \
   -t ghcr.io/dimitrisbro/mcp-ueransim/ueransim-gnb:3.3.0 -t ghcr.io/dimitrisbro/mcp-ueransim/ueransim-gnb:latest --push .
 docker buildx build --builder multiarch-builder --platform linux/amd64,linux/arm64 -f docker/ue_ubuntu.Dockerfile \
-  -t ghcr.io/dimitrisbro/mcp-ueransim/ueransim-ue:3.3.0 -t ghcr.io/dimitrisbro/mcp-ueransim/ueransim-ue:latest --push .
+  -t ghcr.io/dimitrisbro/mcp-ueransim/ueransim-ue:3.3.0-1 -t ghcr.io/dimitrisbro/mcp-ueransim/ueransim-ue:latest --push .
 ```
 
 Images are stored in GHCR under `ghcr.io/dimitrisbro/mcp-ueransim/`.
@@ -83,7 +83,8 @@ create/attach/edit/delete tools against a mocked Kubernetes API.
 ## UERANSIM version
 
 Targets **v3.3.0**, pinned by `ARG UERANSIM_VERSION` in the gNB/UE Dockerfiles; images are tagged
-`:3.3.0` (and `latest`), and the tools default to the `:3.3.0` images. The `cellAccessType` field is
+`:3.3.0` (and `latest`; the UE image is `:3.3.0-1` since it also ships `nr-cli`), and the tools default
+to the `:3.3.0` images. The `cellAccessType` field is
 present in `config/open5gs-gnb.yaml`.
 Valid values: `nr`, `nr-leo`, `nr-meo`, `nr-geo`, `nr-othersat` (NTN satellite types).
 
