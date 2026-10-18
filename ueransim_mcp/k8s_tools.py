@@ -112,6 +112,55 @@ def _delete_managed_config_map(v1, pod, cfg_path: str) -> None:
                 raise
 
 
+def _radio_service_name(gnb: str) -> str:
+    return f"{gnb}-radio"
+
+
+def _radio_service(gnb: str, namespace: str):
+    """Headless Service that resolves to the gNB pod's current IP (UDP 4997, the gNB's radio-link
+    port), so a UE's gnbSearchList survives a gNB rollout restart."""
+    from kubernetes import client
+
+    return client.V1Service(
+        metadata=client.V1ObjectMeta(
+            name=_radio_service_name(gnb), namespace=namespace, labels=dict(MANAGED_BY)
+        ),
+        spec=client.V1ServiceSpec(
+            cluster_ip="None",
+            selector={"gnb": gnb},
+            publish_not_ready_addresses=True,
+            ports=[client.V1ServicePort(name="radio", protocol="UDP", port=4997,
+                                        target_port=4997)],
+        ),
+    )
+
+
+def _read_radio_service(v1, gnb: str, namespace: str):
+    """The gNB's ``<gnb>-radio`` Service, or None if there is none (a bare gNB, or one made
+    before the tools created it)."""
+    from kubernetes.client.rest import ApiException
+
+    try:
+        return v1.read_namespaced_service(_radio_service_name(gnb), namespace)
+    except ApiException as e:
+        if e.status == 404:
+            return None
+        raise
+
+
+def _delete_managed_radio_service(v1, gnb: str, namespace: str) -> None:
+    """Delete the gNB's radio Service only if the create tools made it (infra/ owns its own)."""
+    from kubernetes.client.rest import ApiException
+
+    svc = _read_radio_service(v1, gnb, namespace)
+    if svc is not None and (svc.metadata.labels or {}).items() >= MANAGED_BY.items():
+        try:
+            v1.delete_namespaced_service(_radio_service_name(gnb), namespace)
+        except ApiException as e:
+            if e.status != 404:
+                raise
+
+
 # ── gNB tools ─────────────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -194,6 +243,11 @@ def k8s_create_gnb(
         v1.create_namespaced_config_map(
             namespace, _config_map(f"{pod_name}-config", namespace, "open5gs-gnb.yaml", cfg)
         )
+        try:
+            v1.create_namespaced_service(namespace, _radio_service(pod_name, namespace))
+        except ApiException:
+            v1.delete_namespaced_config_map(f"{pod_name}-config", namespace)  # a retry must not 409
+            raise
         pod_spec = (
             client.V1PodSpec(
                 image_pull_secrets=[client.V1LocalObjectReference(name=image_pull_secret)],
@@ -220,6 +274,7 @@ def k8s_create_gnb(
                 ),
             )
         except ApiException:
+            v1.delete_namespaced_service(_radio_service_name(pod_name), namespace)
             v1.delete_namespaced_config_map(f"{pod_name}-config", namespace)  # a retry must not 409
             raise
 
@@ -324,12 +379,14 @@ def k8s_delete_gnb(pod_name: str, namespace: str = "ueransim", kubeconfig: str =
                     message=f"Deployment {pod_name} was still being deleted after 60s",
                 )
             _delete_managed_config_map(v1, _template_pod(deployment), GNB_CFG)
+            _delete_managed_radio_service(v1, pod_name, namespace)
             kind_name = "Deployment"
         else:
             pod = v1.read_namespaced_pod(pod_name, namespace)
             v1.delete_namespaced_pod(pod_name, namespace,
                                      body=client.V1DeleteOptions(grace_period_seconds=0))
             _delete_managed_config_map(v1, pod, GNB_CFG)
+            _delete_managed_radio_service(v1, pod_name, namespace)
             kind_name = "Pod"
         return GnbOperationResponse(
             status="success",
@@ -759,7 +816,10 @@ def k8s_get_ue_logs(
 def k8s_attach_ue_to_gnb(
     ue_pod_name: str, gnb_pod_name: str, namespace: str = "ueransim", kubeconfig: str = "",
 ) -> UeOperationResponse:
-    """Point a UE at a gNB's pod IP: update its ConfigMap and restart its Deployment (rollout restart).
+    """Point a UE at a gNB: update its ConfigMap and restart its Deployment (rollout restart).
+
+    The UE gets the gNB's ``<gnb>-radio.<namespace>.svc.cluster.local`` name when that Service
+    exists (gNBs made by k8s_create_gnb), so it follows the gNB across restarts; else the pod IP.
 
     Args:
         ue_pod_name: UE pod name
@@ -783,9 +843,14 @@ def k8s_attach_ue_to_gnb(
                 container=ue_pod_name,
             )
         gnb_ip = gnb_ip_result.logs.strip()
+        gnb_name = workload_name(v1, apps, gnb_pod_name, namespace)
+        if _read_radio_service(v1, gnb_name, namespace) is not None:
+            gnb_addr = f"{_radio_service_name(gnb_name)}.{namespace}.svc.cluster.local"
+        else:
+            gnb_addr = gnb_ip
 
         def set_gnb(cfg: dict) -> None:
-            cfg["gnbSearchList"] = [gnb_ip]
+            cfg["gnbSearchList"] = [gnb_addr]
 
         if not _edit_pod_config(v1, apps, ue_pod_name, namespace, UE_CFG, set_gnb):
             return UeOperationResponse(
@@ -808,7 +873,7 @@ def k8s_attach_ue_to_gnb(
         return UeOperationResponse(
             status="success" if (gnb_ok and ue_ok) else "warning",
             message=(f"UE pod {ue_pod_name} attached to gNB pod {gnb_pod_name}"
-                     f" (gNB IP: {gnb_ip}). {'; '.join(details)}"),
+                     f" (gNB address: {gnb_addr}). {'; '.join(details)}"),
             container=ue_pod_name,
             logs=f"gNB check:\n{gnb_out}\n\nUE check:\n{ue_out}",
         )

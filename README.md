@@ -234,8 +234,12 @@ edit tools change that ConfigMap and rollout-restart the Deployment. The create 
 Deployment (`replicas: 1`, `strategy: Recreate`, so two gNBs with the same NCI never connect to the AMF at
 once): a deleted, evicted or node-lost pod comes back by itself. Tools take the Deployment name and find its
 pod through the label selector (`ueransim-mcp/workload=<name>`; pod names carry a hash suffix). A pod
-name also works: it is mapped to its Deployment. Delete returns once the Deployment is gone. The MCP's
-service account needs `get/list/create/patch/delete` on `deployments` (apps). A bare pod made by `infra/` is
+name also works: it is mapped to its Deployment. Delete returns once the Deployment is gone.
+`k8s_create_gnb` also makes a headless Service `<gnb>-radio` (UDP 4997, `publishNotReadyAddresses`), and
+`k8s_attach_ue_to_gnb` writes `<gnb>-radio.<namespace>.svc.cluster.local` into the UE's `gnbSearchList` when that
+Service exists (else the pod IP, as for bare gNBs), so an attached UE finds the gNB again after a rollout
+restart; `k8s_delete_gnb` removes the Service if the tools made it. The MCP's
+service account needs `get/list/create/patch/delete` on `deployments` (apps) and on `services`. A bare pod made by `infra/` is
 still recreated by the attach/edit tools. A pod without such a ConfigMap
 (e.g. one created by an older version) is refused. `k8s_delete_*` also removes the
 ConfigMap if the create tools made it (label `app.kubernetes.io/managed-by=ueransim-mcp`).

@@ -128,6 +128,7 @@ def _deployment(name: str, cfg_path: str, cm_name: str, ns: str = "net-demo"):
 @pytest.fixture
 def v1():
     api = MagicMock()
+    api.read_namespaced_service.side_effect = ApiException(status=404)  # no <gnb>-radio Service
     with patch.object(k8s_tools, "get_k8s_client", return_value=api), \
          patch.object(k8s_tools.time, "sleep"):
         yield api
@@ -176,6 +177,12 @@ def test_create_gnb_makes_a_recreate_deployment_from_its_own_config_map(v1, apps
     assert (container.volume_mounts[0].mount_path, container.volume_mounts[0].sub_path) == (
         GNB_CFG, "open5gs-gnb.yaml")
     assert deployment.spec.template.spec.volumes[0].config_map.name == "gnb-x-config"
+    ns, svc = v1.create_namespaced_service.call_args.args
+    assert ns == "net-demo"
+    assert svc.metadata.name == "gnb-x-radio" and svc.metadata.labels == MANAGED_BY
+    assert svc.spec.cluster_ip == "None" and svc.spec.publish_not_ready_addresses is True
+    assert svc.spec.selector == {"gnb": "gnb-x"}
+    assert (svc.spec.ports[0].protocol, svc.spec.ports[0].port) == ("UDP", 4997)
     v1.create_namespaced_pod.assert_not_called()
     v1.connect_get_namespaced_pod_exec.assert_not_called()
 
@@ -315,6 +322,47 @@ def test_edit_rejects_an_unsupported_field_before_touching_the_pod(v1, apps) -> 
     v1.read_namespaced_pod.assert_not_called()
 
 
+def test_attach_ue_writes_the_gnb_radio_service_name_when_it_exists(v1, apps) -> None:
+    v1.read_namespaced_service.side_effect = None
+    ue_dep = _deployment("ue-1", UE_CFG, "ue-1-config")
+    gnb_dep = _deployment("gnb-1a", GNB_CFG, "gnb-1a-config")
+    apps.read_namespaced_deployment.side_effect = lambda n, ns: {"ue-1": ue_dep,
+                                                                  "gnb-1a": gnb_dep}[n]
+    v1.list_namespaced_pod.return_value = SimpleNamespace(items=[_pod("p-x", UE_CFG, "ue-1-config")])
+    v1.read_namespaced_pod.return_value = _pod("p-x", UE_CFG, "ue-1-config")
+    v1.read_namespaced_config_map.return_value = SimpleNamespace(
+        data={"open5gs-ue.yaml": yaml.safe_dump(build_ue_config(**UE_ARGS))})
+
+    with patch.object(k8s_tools, "exec_in_pod", side_effect=[
+        ("nr-gnb is running", ""), ("nr-ue is running", ""),
+    ]):
+        result = k8s_tools.k8s_attach_ue_to_gnb("ue-1", "gnb-1a", namespace="net-demo")
+
+    assert result.status == "success"
+    v1.read_namespaced_service.assert_called_with("gnb-1a-radio", "net-demo")
+    _, _, body = v1.patch_namespaced_config_map.call_args.args
+    assert yaml.safe_load(body["data"]["open5gs-ue.yaml"])["gnbSearchList"] == [
+        "gnb-1a-radio.net-demo.svc.cluster.local"]
+
+
+@pytest.mark.parametrize("labels, deleted", [(MANAGED_BY, True), ({}, False)])
+def test_delete_gnb_removes_only_a_tool_made_radio_service(v1, apps, labels, deleted) -> None:
+    apps.read_namespaced_deployment.side_effect = None
+    apps.read_namespaced_deployment.return_value = _deployment("gnb-x", GNB_CFG, "gnb-x-config")
+    v1.read_namespaced_config_map.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(labels={}))
+    v1.read_namespaced_service.side_effect = None
+    v1.read_namespaced_service.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(labels=labels))
+
+    result = k8s_tools.k8s_delete_gnb("gnb-x", namespace="net-demo", confirm=True)
+
+    assert result.status == "success"
+    assert v1.delete_namespaced_service.called is deleted
+    if deleted:
+        v1.delete_namespaced_service.assert_called_once_with("gnb-x-radio", "net-demo")
+
+
 @pytest.mark.parametrize("labels, deleted", [(MANAGED_BY, True), ({}, False)])
 def test_delete_gnb_removes_the_deployment_and_only_config_maps_the_tools_created(
     v1, apps, labels, deleted
@@ -434,6 +482,7 @@ def test_failed_deployment_create_removes_its_config_map(v1, apps) -> None:
 
     assert result.status == "error" and "409" in result.message
     v1.delete_namespaced_config_map.assert_called_once_with("gnb-x-config", "net-demo")
+    v1.delete_namespaced_service.assert_called_once_with("gnb-x-radio", "net-demo")
 
 
 def test_wait_for_deployment_ready_surfaces_api_errors() -> None:
