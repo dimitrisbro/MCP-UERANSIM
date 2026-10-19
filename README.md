@@ -237,8 +237,10 @@ pod through the label selector (`ueransim-mcp/workload=<name>`; pod names carry 
 name also works: it is mapped to its Deployment. Delete returns once the Deployment is gone.
 `k8s_create_gnb` also makes a headless Service `<gnb>-radio` (UDP 4997, `publishNotReadyAddresses`), and
 `k8s_attach_ue_to_gnb` writes `<gnb>-radio.<namespace>.svc.cluster.local` into the UE's `gnbSearchList` when that
-Service exists (else the pod IP, as for bare gNBs), so an attached UE finds the gNB again after a rollout
-restart; `k8s_delete_gnb` removes the Service if the tools made it. The MCP's
+Service exists (else the pod IP, as for bare gNBs), so attaching needs no live gNB pod. nr-ue resolves the
+name only when it starts: after a gNB rollout restart the UE still needs a restart (not a new attach) to
+reach the new pod. `k8s_create_gnb` reuses a tool-made `<gnb>-radio` left behind; `k8s_delete_gnb`
+removes the Service if the tools made it. The MCP's
 service account needs `get/list/create/patch/delete` on `deployments` (apps) and on `services`. A bare pod made by `infra/` is
 still recreated by the attach/edit tools. A pod without such a ConfigMap
 (e.g. one created by an older version) is refused. `k8s_delete_*` also removes the

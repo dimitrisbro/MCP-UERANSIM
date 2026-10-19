@@ -345,6 +345,27 @@ def test_attach_ue_writes_the_gnb_radio_service_name_when_it_exists(v1, apps) ->
         "gnb-1a-radio.net-demo.svc.cluster.local"]
 
 
+def test_attach_ue_by_radio_service_needs_no_gnb_pod_ip(v1, apps) -> None:
+    v1.read_namespaced_service.side_effect = None
+    ue_dep = _deployment("ue-1", UE_CFG, "ue-1-config")
+    gnb_dep = _deployment("gnb-1a", GNB_CFG, "gnb-1a-config")
+    apps.read_namespaced_deployment.side_effect = lambda n, ns: {"ue-1": ue_dep,
+                                                                  "gnb-1a": gnb_dep}[n]
+    v1.list_namespaced_pod.return_value = SimpleNamespace(items=[_pod("p-x", UE_CFG, "ue-1-config")])
+    v1.read_namespaced_pod.return_value = _pod("p-x", UE_CFG, "ue-1-config")
+    v1.read_namespaced_config_map.return_value = SimpleNamespace(
+        data={"open5gs-ue.yaml": yaml.safe_dump(build_ue_config(**UE_ARGS))})
+
+    with patch.object(k8s_tools, "k8s_inspect_pod_ip") as inspect, \
+         patch.object(k8s_tools, "exec_in_pod", side_effect=[
+             ("nr-gnb is running", ""), ("nr-ue is running", ""),
+         ]):
+        result = k8s_tools.k8s_attach_ue_to_gnb("ue-1", "gnb-1a", namespace="net-demo")
+
+    assert result.status == "success"
+    inspect.assert_not_called()
+
+
 @pytest.mark.parametrize("labels, deleted", [(MANAGED_BY, True), ({}, False)])
 def test_delete_gnb_removes_only_a_tool_made_radio_service(v1, apps, labels, deleted) -> None:
     apps.read_namespaced_deployment.side_effect = None
@@ -482,7 +503,38 @@ def test_failed_deployment_create_removes_its_config_map(v1, apps) -> None:
 
     assert result.status == "error" and "409" in result.message
     v1.delete_namespaced_config_map.assert_called_once_with("gnb-x-config", "net-demo")
+    v1.delete_namespaced_service.assert_not_called()  # the fixture has no <gnb>-radio Service
+
+    v1.read_namespaced_service.side_effect = None
+    v1.read_namespaced_service.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(labels=dict(MANAGED_BY)))
+    k8s_tools.k8s_create_gnb(amf_address="10.0.0.5", pod_name="gnb-x", namespace="net-demo")
     v1.delete_namespaced_service.assert_called_once_with("gnb-x-radio", "net-demo")
+
+
+def test_failed_radio_service_delete_still_removes_the_config_map(v1, apps) -> None:
+    apps.create_namespaced_deployment.side_effect = ApiException(status=409, reason="Conflict")
+    v1.read_namespaced_service.side_effect = ApiException(status=403, reason="Forbidden")
+
+    result = k8s_tools.k8s_create_gnb(amf_address="10.0.0.5", pod_name="gnb-x",
+                                      namespace="net-demo")
+
+    assert result.status == "error"
+    v1.delete_namespaced_config_map.assert_called_once_with("gnb-x-config", "net-demo")
+
+
+@pytest.mark.parametrize("labels, reused", [(MANAGED_BY, True), ({}, False)])
+def test_create_gnb_reuses_only_a_tool_made_leftover_radio_service(v1, apps, labels,
+                                                                   reused) -> None:
+    v1.create_namespaced_service.side_effect = ApiException(status=409, reason="Conflict")
+    v1.read_namespaced_service.side_effect = None
+    v1.read_namespaced_service.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(labels=dict(labels)))
+
+    k8s_tools.k8s_create_gnb(amf_address="10.0.0.5", pod_name="gnb-x", namespace="net-demo")
+
+    assert apps.create_namespaced_deployment.called is reused
+    assert v1.delete_namespaced_config_map.called is not reused
 
 
 def test_wait_for_deployment_ready_surfaces_api_errors() -> None:

@@ -148,12 +148,19 @@ def _read_radio_service(v1, gnb: str, namespace: str):
         raise
 
 
-def _delete_managed_radio_service(v1, gnb: str, namespace: str) -> None:
-    """Delete the gNB's radio Service only if the create tools made it (infra/ owns its own)."""
-    from kubernetes.client.rest import ApiException
-
+def _managed_radio_service(v1, gnb: str, namespace: str):
+    """The gNB's radio Service if the create tools made it (infra/ owns its own), else None."""
     svc = _read_radio_service(v1, gnb, namespace)
     if svc is not None and (svc.metadata.labels or {}).items() >= MANAGED_BY.items():
+        return svc
+    return None
+
+
+def _delete_managed_radio_service(v1, gnb: str, namespace: str) -> None:
+    """Delete the gNB's radio Service only if the create tools made it."""
+    from kubernetes.client.rest import ApiException
+
+    if _managed_radio_service(v1, gnb, namespace) is not None:
         try:
             v1.delete_namespaced_service(_radio_service_name(gnb), namespace)
         except ApiException as e:
@@ -245,9 +252,12 @@ def k8s_create_gnb(
         )
         try:
             v1.create_namespaced_service(namespace, _radio_service(pod_name, namespace))
-        except ApiException:
-            v1.delete_namespaced_config_map(f"{pod_name}-config", namespace)  # a retry must not 409
-            raise
+        except ApiException as e:
+            # A tool-made <name>-radio left behind (e.g. a delete that timed out) is reused.
+            if e.status != 409 or _managed_radio_service(v1, pod_name, namespace) is None:
+                # a retry must not 409
+                v1.delete_namespaced_config_map(f"{pod_name}-config", namespace)
+                raise
         pod_spec = (
             client.V1PodSpec(
                 image_pull_secrets=[client.V1LocalObjectReference(name=image_pull_secret)],
@@ -274,8 +284,8 @@ def k8s_create_gnb(
                 ),
             )
         except ApiException:
-            v1.delete_namespaced_service(_radio_service_name(pod_name), namespace)
             v1.delete_namespaced_config_map(f"{pod_name}-config", namespace)  # a retry must not 409
+            _delete_managed_radio_service(v1, pod_name, namespace)
             raise
 
         if not wait_for_deployment_ready(apps, pod_name, namespace):
@@ -819,7 +829,9 @@ def k8s_attach_ue_to_gnb(
     """Point a UE at a gNB: update its ConfigMap and restart its Deployment (rollout restart).
 
     The UE gets the gNB's ``<gnb>-radio.<namespace>.svc.cluster.local`` name when that Service
-    exists (gNBs made by k8s_create_gnb), so it follows the gNB across restarts; else the pod IP.
+    exists (gNBs made by k8s_create_gnb), so no gNB pod IP is needed; else the pod IP. nr-ue
+    resolves the name when it starts, so after a gNB restart the UE still needs a restart (not a
+    new attach) to reach the new pod.
 
     Args:
         ue_pod_name: UE pod name
@@ -835,19 +847,19 @@ def k8s_attach_ue_to_gnb(
         apps = get_apps_client(kubeconfig=kubeconfig)
         ue_pod_name = workload_name(v1, apps, ue_pod_name, namespace)
 
-        gnb_ip_result = k8s_inspect_pod_ip(gnb_pod_name, namespace, kubeconfig=kubeconfig)
-        if gnb_ip_result.status != "success" or not gnb_ip_result.logs:
-            return UeOperationResponse(
-                status="error",
-                message=f"Could not determine IP for gNB pod {gnb_pod_name}: {gnb_ip_result.message}",
-                container=ue_pod_name,
-            )
-        gnb_ip = gnb_ip_result.logs.strip()
         gnb_name = workload_name(v1, apps, gnb_pod_name, namespace)
         if _read_radio_service(v1, gnb_name, namespace) is not None:
             gnb_addr = f"{_radio_service_name(gnb_name)}.{namespace}.svc.cluster.local"
         else:
-            gnb_addr = gnb_ip
+            gnb_ip_result = k8s_inspect_pod_ip(gnb_pod_name, namespace, kubeconfig=kubeconfig)
+            if gnb_ip_result.status != "success" or not gnb_ip_result.logs:
+                return UeOperationResponse(
+                    status="error",
+                    message=(f"Could not determine IP for gNB pod {gnb_pod_name}: "
+                             f"{gnb_ip_result.message}"),
+                    container=ue_pod_name,
+                )
+            gnb_addr = gnb_ip_result.logs.strip()
 
         def set_gnb(cfg: dict) -> None:
             cfg["gnbSearchList"] = [gnb_addr]
